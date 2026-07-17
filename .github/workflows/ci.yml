@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.architecture }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x64, ARM64]
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A ${{ matrix.architecture }}
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Run isolated self-test
+        if: matrix.architecture == 'x64'
+        shell: pwsh
+        run: |
+          & .\build\Release\TrayIconPromoter.exe --self-test --silent
+          if ($LASTEXITCODE -ne 0) {
+            throw "Self-test failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrayIconPromoter-${{ matrix.architecture }}
+          path: build/Release/TrayIconPromoter.exe
+          if-no-files-found: error
+
