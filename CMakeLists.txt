@@ -8,6 +8,9 @@ add_executable(TrayIconPromoter WIN32
 )
 
 target_compile_features(TrayIconPromoter PRIVATE c_std_11)
+target_include_directories(TrayIconPromoter PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+)
 target_compile_definitions(TrayIconPromoter PRIVATE
     UNICODE
     _UNICODE

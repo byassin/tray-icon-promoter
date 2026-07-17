@@ -23,7 +23,7 @@ New-Item -ItemType Directory -Force -Path $buildDirectory, $distDirectory | Out-
 $resourceObject = Join-Path $buildDirectory 'version.o'
 & $windres.Source `
     (Join-Path $projectRoot 'resources\version.rc') `
-    '--include-dir' $projectRoot `
+    '--include-dir' (Join-Path $projectRoot 'resources') `
     '-O' 'coff' `
     '-o' $resourceObject
 if ($LASTEXITCODE -ne 0) { throw "windres failed with exit code $LASTEXITCODE" }
