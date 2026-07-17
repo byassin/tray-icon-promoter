@@ -31,9 +31,13 @@ jobs:
         if: matrix.architecture == 'x64'
         shell: pwsh
         run: |
-          & .\build\Release\TrayIconPromoter.exe --self-test --silent
-          if ($LASTEXITCODE -ne 0) {
-            throw "Self-test failed with exit code $LASTEXITCODE"
+          $process = Start-Process `
+            -FilePath .\build\Release\TrayIconPromoter.exe `
+            -ArgumentList '--self-test', '--silent' `
+            -Wait `
+            -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Self-test failed with exit code $($process.ExitCode)"
           }
 
       - name: Package
@@ -80,4 +84,3 @@ jobs:
           --title "Tray Icon Promoter ${{ github.ref_name }}"
           --generate-notes
           --verify-tag
-
