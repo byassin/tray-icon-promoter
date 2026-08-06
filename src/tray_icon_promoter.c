@@ -1,7 +1,7 @@
 #include <windows.h>
 
 #define APP_NAME L"Tray Icon Promoter"
-#define APP_VERSION L"1.0.0"
+#define APP_VERSION L"1.0.1"
 #define REGISTRY_PATH L"Control Panel\\NotifyIconSettings"
 #define RUN_KEY_PATH L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 #define RUN_VALUE_NAME L"TrayIconPromoter"

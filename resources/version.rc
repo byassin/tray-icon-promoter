@@ -3,8 +3,8 @@
 1 RT_MANIFEST "app.manifest"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,0
- PRODUCTVERSION 1,0,0,0
+ FILEVERSION 1,0,1,0
+ PRODUCTVERSION 1,0,1,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS VS_FF_DEBUG
@@ -21,12 +21,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Bourhan Yassin\0"
             VALUE "FileDescription", "Tray Icon Promoter\0"
-            VALUE "FileVersion", "1.0.0\0"
+            VALUE "FileVersion", "1.0.1\0"
             VALUE "InternalName", "TrayIconPromoter\0"
             VALUE "LegalCopyright", "Copyright (c) 2026 Bourhan Yassin\0"
             VALUE "OriginalFilename", "TrayIconPromoter.exe\0"
             VALUE "ProductName", "Tray Icon Promoter\0"
-            VALUE "ProductVersion", "1.0.0\0"
+            VALUE "ProductVersion", "1.0.1\0"
         END
     END
     BLOCK "VarFileInfo"

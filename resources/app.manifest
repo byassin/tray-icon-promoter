@@ -3,7 +3,7 @@
   <assemblyIdentity
       name="BourhanYassin.TrayIconPromoter"
       processorArchitecture="*"
-      version="1.0.0.0"
+      version="1.0.1.0"
       type="win32" />
   <description>Keeps all Windows 11 notification area icons visible.</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">

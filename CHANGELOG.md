@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-05
+
 ### Fixed
 
 - Repair installs now replace an existing executable when its read-only attribute is set.
@@ -20,5 +22,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Install, uninstall, watch, one-shot, status, and self-test commands.
 - x64 and ARM64 CI/release builds with SHA-256 checksums.
 
-[Unreleased]: https://github.com/byassin/tray-icon-promoter/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/byassin/tray-icon-promoter/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/byassin/tray-icon-promoter/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/byassin/tray-icon-promoter/releases/tag/v1.0.0
