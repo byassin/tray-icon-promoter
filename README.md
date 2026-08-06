@@ -87,7 +87,7 @@ The executable, checksum file, and optional ZIP package are written to `dist`.
 
 ## Release process
 
-1. Update the version in `CMakeLists.txt`, `src/tray_icon_promoter.c`, `resources/version.rc`, and `CHANGELOG.md`.
+1. Update the version in `CMakeLists.txt`, `src/tray_icon_promoter.c`, `resources/app.manifest`, `resources/version.rc`, and `CHANGELOG.md`.
 2. Merge only after the Windows CI build and x64 self-test pass.
 3. Tag the commit, for example `v1.0.0`, and push the tag.
 4. GitHub Actions builds x64 and ARM64 packages, creates `SHA256SUMS.txt`, and publishes a GitHub Release.

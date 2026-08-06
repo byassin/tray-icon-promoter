@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(TrayIconPromoter VERSION 1.0.0 LANGUAGES C RC)
+project(TrayIconPromoter VERSION 1.0.1 LANGUAGES C RC)
 
 add_executable(TrayIconPromoter WIN32
     src/tray_icon_promoter.c
