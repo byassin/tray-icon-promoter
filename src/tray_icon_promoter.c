@@ -618,12 +618,62 @@ static BOOL StartInstalledWatcher(const WCHAR *installedExecutable)
     return result;
 }
 
+static BOOL CopyInstalledExecutable(const WCHAR *source, const WCHAR *destination)
+{
+    DWORD originalAttributes = GetFileAttributesW(destination);
+    BOOL clearedReadOnly = FALSE;
+    BOOL copied = FALSE;
+    DWORD copyError = ERROR_SUCCESS;
+    DWORD attempt;
+
+    if (originalAttributes == INVALID_FILE_ATTRIBUTES) {
+        DWORD attributesError = GetLastError();
+        if (attributesError != ERROR_FILE_NOT_FOUND && attributesError != ERROR_PATH_NOT_FOUND) {
+            return FALSE;
+        }
+    } else if ((originalAttributes & FILE_ATTRIBUTE_READONLY) != 0) {
+        if (!SetFileAttributesW(destination, originalAttributes & ~FILE_ATTRIBUTE_READONLY)) {
+            return FALSE;
+        }
+        clearedReadOnly = TRUE;
+    }
+
+    for (attempt = 0; attempt < STOP_WAIT_ATTEMPTS; attempt++) {
+        if (CopyFileW(source, destination, FALSE)) {
+            copied = TRUE;
+            break;
+        }
+        copyError = GetLastError();
+        Sleep(100);
+    }
+
+    if (!copied) {
+        if (clearedReadOnly) {
+            SetFileAttributesW(destination, originalAttributes);
+        }
+        SetLastError(copyError);
+        return FALSE;
+    }
+
+    {
+        DWORD installedAttributes = GetFileAttributesW(destination);
+        if (installedAttributes == INVALID_FILE_ATTRIBUTES) {
+            return FALSE;
+        }
+        if ((installedAttributes & FILE_ATTRIBUTE_READONLY) != 0 &&
+            !SetFileAttributesW(destination, installedAttributes & ~FILE_ATTRIBUTE_READONLY)) {
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
 static int Install(BOOL silent)
 {
     WCHAR source[MAX_PATH];
     WCHAR installDirectory[MAX_PATH];
     WCHAR installedExecutable[MAX_PATH];
-    DWORD attempt;
 
     if (!GetModulePath(source, (DWORD)(sizeof(source) / sizeof(source[0]))) ||
         !GetInstallPaths(
@@ -644,16 +694,7 @@ static int Install(BOOL silent)
     }
 
     if (!StringEquals(source, installedExecutable)) {
-        BOOL copied = FALSE;
-        for (attempt = 0; attempt < STOP_WAIT_ATTEMPTS; attempt++) {
-            if (CopyFileW(source, installedExecutable, FALSE)) {
-                copied = TRUE;
-                break;
-            }
-            Sleep(100);
-        }
-
-        if (!copied) {
+        if (!CopyInstalledExecutable(source, installedExecutable)) {
             ShowWin32Error(silent, L"Copying the executable", GetLastError());
             return 22;
         }
@@ -718,6 +759,50 @@ static int Uninstall(BOOL silent)
     }
 
     return 0;
+}
+
+static BOOL SelfTestReadOnlyRepair(void)
+{
+    WCHAR source[MAX_PATH];
+    WCHAR temporaryDirectory[MAX_PATH];
+    WCHAR temporaryFile[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA sourceData;
+    WIN32_FILE_ATTRIBUTE_DATA installedData;
+    DWORD temporaryDirectoryLength;
+    DWORD installedAttributes;
+    BOOL passed = FALSE;
+
+    if (!GetModulePath(source, (DWORD)(sizeof(source) / sizeof(source[0])))) {
+        return FALSE;
+    }
+
+    temporaryDirectoryLength = GetTempPathW(
+        (DWORD)(sizeof(temporaryDirectory) / sizeof(temporaryDirectory[0])),
+        temporaryDirectory);
+    if (temporaryDirectoryLength == 0 ||
+        temporaryDirectoryLength >= (DWORD)(sizeof(temporaryDirectory) / sizeof(temporaryDirectory[0])) ||
+        GetTempFileNameW(temporaryDirectory, L"TIP", 0, temporaryFile) == 0) {
+        return FALSE;
+    }
+
+    if (SetFileAttributesW(temporaryFile, FILE_ATTRIBUTE_READONLY) &&
+        CopyInstalledExecutable(source, temporaryFile) &&
+        GetFileAttributesExW(source, GetFileExInfoStandard, &sourceData) &&
+        GetFileAttributesExW(temporaryFile, GetFileExInfoStandard, &installedData)) {
+        installedAttributes = installedData.dwFileAttributes;
+        passed =
+            (installedAttributes & FILE_ATTRIBUTE_READONLY) == 0 &&
+            sourceData.nFileSizeHigh == installedData.nFileSizeHigh &&
+            sourceData.nFileSizeLow == installedData.nFileSizeLow;
+    }
+
+    installedAttributes = GetFileAttributesW(temporaryFile);
+    if (installedAttributes != INVALID_FILE_ATTRIBUTES &&
+        (installedAttributes & FILE_ATTRIBUTE_READONLY) != 0) {
+        SetFileAttributesW(temporaryFile, installedAttributes & ~FILE_ATTRIBUTE_READONLY);
+    }
+
+    return DeleteFileW(temporaryFile) && passed;
 }
 
 static int ShowStatus(BOOL silent)
@@ -816,6 +901,8 @@ static int SelfTest(BOOL silent)
     }
     RegDeleteTreeW(root, SELF_TEST_KEY_NAME);
     RegCloseKey(root);
+
+    passed = SelfTestReadOnlyRepair() && passed;
 
     ShowMessage(
         silent,
