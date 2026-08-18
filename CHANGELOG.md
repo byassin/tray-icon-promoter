@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Clarified architecture-specific installation, package checksum and attestation verification, status health criteria, build and test prerequisites, supported security versions, ARM64 CI coverage, and the exact per-user state the application modifies.
+
 ## [1.1.0] - 2026-08-17
 
 ### Added
