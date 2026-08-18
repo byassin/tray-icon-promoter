@@ -6,7 +6,7 @@ Security fixes are applied to the latest release.
 
 ## Reporting a vulnerability
 
-Please do not open a public issue for a vulnerability that could put users at risk. Use GitHub's **Report a vulnerability** feature under the repository's Security tab. If private vulnerability reporting is not enabled, contact the maintainer through the email address on their GitHub profile.
+Please do not open a public issue for a vulnerability that could put users at risk. Use GitHub's **Report a vulnerability** feature under the repository's Security tab.
 
 Include:
 
@@ -28,5 +28,4 @@ Tray Icon Promoter is designed to:
 - make no network connections;
 - reject duplicate watcher instances.
 
-Release binaries are built by GitHub Actions and accompanied by SHA-256 checksums. They are not currently Authenticode-signed.
-
+Release binaries are built by GitHub Actions and accompanied by SHA-256 checksums and GitHub artifact attestations. They are not currently Authenticode-signed.

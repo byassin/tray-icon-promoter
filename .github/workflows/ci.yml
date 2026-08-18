@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Configure
         run: cmake -S . -B build -A ${{ matrix.architecture }}
@@ -40,8 +40,16 @@ jobs:
             throw "Self-test failed with exit code $($process.ExitCode)"
           }
 
+      - name: Run install lifecycle test
+        if: matrix.architecture == 'x64'
+        shell: pwsh
+        run: >-
+          ./scripts/test-install.ps1
+          -Executable ./build/Release/TrayIconPromoter.exe
+          -ExpectedVersion '1.1.0'
+
       - name: Upload executable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: TrayIconPromoter-${{ matrix.architecture }}
           path: build/Release/TrayIconPromoter.exe

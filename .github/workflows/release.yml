@@ -5,9 +5,6 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
-
 jobs:
   build:
     name: Build ${{ matrix.architecture }}
@@ -16,10 +13,12 @@ jobs:
       fail-fast: false
       matrix:
         architecture: [x64, ARM64]
+    permissions:
+      contents: read
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Configure
         run: cmake -S . -B build -A ${{ matrix.architecture }}
@@ -40,6 +39,14 @@ jobs:
             throw "Self-test failed with exit code $($process.ExitCode)"
           }
 
+      - name: Run install lifecycle test
+        if: matrix.architecture == 'x64'
+        shell: pwsh
+        run: >-
+          ./scripts/test-install.ps1
+          -Executable ./build/Release/TrayIconPromoter.exe
+          -ExpectedVersion '1.1.0'
+
       - name: Package
         shell: pwsh
         run: |
@@ -51,7 +58,7 @@ jobs:
           Compress-Archive -Path "$package\*" -DestinationPath "TrayIconPromoter-${{ github.ref_name }}-${{ matrix.architecture }}.zip"
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: release-${{ matrix.architecture }}
           path: TrayIconPromoter-${{ github.ref_name }}-${{ matrix.architecture }}.zip
@@ -61,10 +68,14 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
 
     steps:
       - name: Download packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           pattern: release-*
           merge-multiple: true
@@ -73,6 +84,13 @@ jobs:
       - name: Create checksums
         working-directory: release
         run: sha256sum *.zip > SHA256SUMS.txt
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: |
+            release/*.zip
+            release/SHA256SUMS.txt
 
       - name: Publish release
         env:

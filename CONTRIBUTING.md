@@ -7,8 +7,9 @@ Contributions are welcome. Keep changes small, reviewable, and focused on the pr
 1. Create a branch from `main`.
 2. Build with CMake and a current Visual Studio toolchain, or use `scripts/build.ps1` with MinGW-w64.
 3. Run `TrayIconPromoter.exe --self-test --silent`.
-4. Test install, status, live promotion, logon startup, and uninstall on Windows 11.
-5. Update documentation and `CHANGELOG.md` for user-visible changes.
+4. Run `./scripts/test-install.ps1 -Executable <path> -ExpectedVersion <version>` only from an isolated Windows account or CI runner with no existing Tray Icon Promoter installation.
+5. Test install, status, live promotion, logon startup, and uninstall on Windows 11.
+6. Update documentation and `CHANGELOG.md` for user-visible changes.
 
 ## Pull requests
 
@@ -17,4 +18,3 @@ Contributions are welcome. Keep changes small, reviewable, and focused on the pr
 - Treat changes to installation, startup, registry access, or release workflows as security-sensitive.
 - Keep compiler warnings enabled and resolved.
 - Do not commit generated binaries outside a tagged GitHub Release.
-
