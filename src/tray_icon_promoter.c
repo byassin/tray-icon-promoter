@@ -1,9 +1,10 @@
 #include <windows.h>
 
 #define APP_NAME L"Tray Icon Promoter"
-#define APP_VERSION L"1.0.1"
+#define APP_VERSION L"1.1.0"
 #define REGISTRY_PATH L"Control Panel\\NotifyIconSettings"
 #define RUN_KEY_PATH L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+#define STARTUP_APPROVED_KEY_PATH L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run"
 #define RUN_VALUE_NAME L"TrayIconPromoter"
 #define PROMOTED_VALUE_NAME L"IsPromoted"
 #define REFRESH_VALUE_NAME L"_temp_tray_icon_promoter_refresh"
@@ -32,6 +33,14 @@ typedef enum RequestedAction {
     ACTION_STATUS,
     ACTION_SELF_TEST
 } RequestedAction;
+
+typedef enum StartupStatus {
+    STARTUP_CONFIGURED,
+    STARTUP_DISABLED,
+    STARTUP_MISSING,
+    STARTUP_MISMATCHED,
+    STARTUP_UNKNOWN
+} StartupStatus;
 
 typedef int (WINAPI *MessageBoxWFunction)(HWND, LPCWSTR, LPCWSTR, UINT);
 
@@ -508,21 +517,163 @@ static int WatchForever(void)
     return 0;
 }
 
+static BOOL BuildWatcherCommand(
+    const WCHAR *executable,
+    WCHAR *command,
+    DWORD commandCapacity)
+{
+    if ((DWORD)lstrlenW(executable) + 13 >= commandCapacity) {
+        return FALSE;
+    }
+
+    command[0] = L'"';
+    command[1] = L'\0';
+    return
+        AppendPathPart(command, commandCapacity, executable) &&
+        AppendPathPart(command, commandCapacity, L"\" --watch");
+}
+
+static BOOL RemoveStartupApprovalOverride(void)
+{
+    HKEY approvalKey = NULL;
+    LSTATUS result = RegOpenKeyExW(
+        HKEY_CURRENT_USER,
+        STARTUP_APPROVED_KEY_PATH,
+        0,
+        KEY_SET_VALUE,
+        &approvalKey);
+
+    if (result == ERROR_FILE_NOT_FOUND) {
+        return TRUE;
+    }
+
+    if (result != ERROR_SUCCESS) {
+        SetLastError((DWORD)result);
+        return FALSE;
+    }
+
+    result = RegDeleteValueW(approvalKey, RUN_VALUE_NAME);
+    RegCloseKey(approvalKey);
+    if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
+        SetLastError((DWORD)result);
+    }
+    return result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND;
+}
+
+static StartupStatus GetStartupStatus(const WCHAR *installedExecutable)
+{
+    HKEY runKey = NULL;
+    HKEY approvalKey = NULL;
+    WCHAR expectedCommand[MAX_PATH + 32];
+    WCHAR actualCommand[MAX_PATH + 32];
+    BYTE approvalData[16];
+    DWORD type = 0;
+    DWORD size = sizeof(actualCommand);
+    LSTATUS result;
+
+    if (!BuildWatcherCommand(
+            installedExecutable,
+            expectedCommand,
+            (DWORD)(sizeof(expectedCommand) / sizeof(expectedCommand[0])))) {
+        return STARTUP_UNKNOWN;
+    }
+
+    result = RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY_PATH, 0, KEY_QUERY_VALUE, &runKey);
+    if (result == ERROR_FILE_NOT_FOUND) {
+        return STARTUP_MISSING;
+    }
+    if (result != ERROR_SUCCESS) {
+        return STARTUP_UNKNOWN;
+    }
+
+    result = RegQueryValueExW(
+        runKey,
+        RUN_VALUE_NAME,
+        NULL,
+        &type,
+        (BYTE *)actualCommand,
+        &size);
+    RegCloseKey(runKey);
+
+    if (result == ERROR_FILE_NOT_FOUND) {
+        return STARTUP_MISSING;
+    }
+    if (result != ERROR_SUCCESS ||
+        type != REG_SZ ||
+        size < sizeof(WCHAR) ||
+        size > sizeof(actualCommand) ||
+        actualCommand[(size / sizeof(WCHAR)) - 1] != L'\0' ||
+        !StringEquals(actualCommand, expectedCommand)) {
+        return STARTUP_MISMATCHED;
+    }
+
+    result = RegOpenKeyExW(
+        HKEY_CURRENT_USER,
+        STARTUP_APPROVED_KEY_PATH,
+        0,
+        KEY_QUERY_VALUE,
+        &approvalKey);
+    if (result == ERROR_FILE_NOT_FOUND) {
+        return STARTUP_CONFIGURED;
+    }
+    if (result != ERROR_SUCCESS) {
+        return STARTUP_UNKNOWN;
+    }
+
+    type = 0;
+    size = sizeof(approvalData);
+    result = RegQueryValueExW(
+        approvalKey,
+        RUN_VALUE_NAME,
+        NULL,
+        &type,
+        approvalData,
+        &size);
+    RegCloseKey(approvalKey);
+
+    if (result == ERROR_FILE_NOT_FOUND) {
+        return STARTUP_CONFIGURED;
+    }
+    if (result != ERROR_SUCCESS || type != REG_BINARY || size < 1) {
+        return STARTUP_UNKNOWN;
+    }
+    if (approvalData[0] == 2) {
+        return STARTUP_CONFIGURED;
+    }
+    if (approvalData[0] == 3) {
+        return STARTUP_DISABLED;
+    }
+    return STARTUP_UNKNOWN;
+}
+
+static const WCHAR *StartupStatusText(StartupStatus status)
+{
+    switch (status) {
+        case STARTUP_CONFIGURED:
+            return L"configured";
+        case STARTUP_DISABLED:
+            return L"disabled in Startup Apps";
+        case STARTUP_MISSING:
+            return L"missing";
+        case STARTUP_MISMATCHED:
+            return L"incorrect command";
+        default:
+            return L"unknown";
+    }
+}
+
 static BOOL SetStartupCommand(const WCHAR *installedExecutable)
 {
     HKEY runKey = NULL;
     WCHAR command[MAX_PATH + 32];
     LSTATUS result;
 
-    if ((DWORD)lstrlenW(installedExecutable) + 13 >=
-        (DWORD)(sizeof(command) / sizeof(command[0]))) {
+    if (!BuildWatcherCommand(
+            installedExecutable,
+            command,
+            (DWORD)(sizeof(command) / sizeof(command[0])))) {
         return FALSE;
     }
-
-    command[0] = L'"';
-    command[1] = L'\0';
-    AppendPathPart(command, (DWORD)(sizeof(command) / sizeof(command[0])), installedExecutable);
-    AppendPathPart(command, (DWORD)(sizeof(command) / sizeof(command[0])), L"\" --watch");
 
     result = RegCreateKeyExW(
         HKEY_CURRENT_USER,
@@ -552,7 +703,11 @@ static BOOL SetStartupCommand(const WCHAR *installedExecutable)
     if (result != ERROR_SUCCESS) {
         SetLastError((DWORD)result);
     }
-    return result == ERROR_SUCCESS;
+    if (result != ERROR_SUCCESS) {
+        return FALSE;
+    }
+
+    return RemoveStartupApprovalOverride();
 }
 
 static BOOL RemoveStartupCommand(void)
@@ -561,20 +716,49 @@ static BOOL RemoveStartupCommand(void)
     LSTATUS result = RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY_PATH, 0, KEY_SET_VALUE, &runKey);
 
     if (result == ERROR_FILE_NOT_FOUND) {
+        result = ERROR_SUCCESS;
+    } else if (result != ERROR_SUCCESS) {
+        SetLastError((DWORD)result);
+        return FALSE;
+    } else {
+        result = RegDeleteValueW(runKey, RUN_VALUE_NAME);
+        RegCloseKey(runKey);
+        if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
+            SetLastError((DWORD)result);
+            return FALSE;
+        }
+    }
+
+    return RemoveStartupApprovalOverride();
+}
+
+static BOOL WaitForWatcherToStart(HANDLE process)
+{
+    DWORD attempt;
+
+    for (attempt = 0; attempt < STOP_WAIT_ATTEMPTS; attempt++) {
+        DWORD waitResult;
+
+        if (IsWatcherRunning()) {
+            return TRUE;
+        }
+
+        waitResult = WaitForSingleObject(process, 100);
+        if (waitResult == WAIT_OBJECT_0) {
+            SetLastError(ERROR_PROCESS_ABORTED);
+            return FALSE;
+        }
+        if (waitResult == WAIT_FAILED) {
+            return FALSE;
+        }
+    }
+
+    if (IsWatcherRunning()) {
         return TRUE;
     }
 
-    if (result != ERROR_SUCCESS) {
-        SetLastError((DWORD)result);
-        return FALSE;
-    }
-
-    result = RegDeleteValueW(runKey, RUN_VALUE_NAME);
-    RegCloseKey(runKey);
-    if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
-        SetLastError((DWORD)result);
-    }
-    return result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND;
+    SetLastError(ERROR_TIMEOUT);
+    return FALSE;
 }
 
 static BOOL StartInstalledWatcher(const WCHAR *installedExecutable)
@@ -584,15 +768,12 @@ static BOOL StartInstalledWatcher(const WCHAR *installedExecutable)
     WCHAR commandLine[MAX_PATH + 32];
     BOOL result;
 
-    if ((DWORD)lstrlenW(installedExecutable) + 13 >=
-        (DWORD)(sizeof(commandLine) / sizeof(commandLine[0]))) {
+    if (!BuildWatcherCommand(
+            installedExecutable,
+            commandLine,
+            (DWORD)(sizeof(commandLine) / sizeof(commandLine[0])))) {
         return FALSE;
     }
-
-    commandLine[0] = L'"';
-    commandLine[1] = L'\0';
-    AppendPathPart(commandLine, (DWORD)(sizeof(commandLine) / sizeof(commandLine[0])), installedExecutable);
-    AppendPathPart(commandLine, (DWORD)(sizeof(commandLine) / sizeof(commandLine[0])), L"\" --watch");
 
     ZeroMemory(&startupInfo, sizeof(startupInfo));
     startupInfo.cb = sizeof(startupInfo);
@@ -611,8 +792,15 @@ static BOOL StartInstalledWatcher(const WCHAR *installedExecutable)
         &processInfo);
 
     if (result) {
+        DWORD startError;
+
         CloseHandle(processInfo.hThread);
+        result = WaitForWatcherToStart(processInfo.hProcess);
+        startError = GetLastError();
         CloseHandle(processInfo.hProcess);
+        if (!result) {
+            SetLastError(startError);
+        }
     }
 
     return result;
@@ -686,7 +874,11 @@ static int Install(BOOL silent)
     }
 
     SignalWatcherToStop();
-    WaitForWatcherToStop();
+    if (!WaitForWatcherToStop()) {
+        SetLastError(ERROR_TIMEOUT);
+        ShowWin32Error(silent, L"Stopping the existing watcher", GetLastError());
+        return 25;
+    }
 
     if (!CreateDirectoryW(installDirectory, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
         ShowWin32Error(silent, L"Creating the installation directory", GetLastError());
@@ -726,7 +918,11 @@ static int Uninstall(BOOL silent)
     BOOL removedFile = FALSE;
 
     SignalWatcherToStop();
-    WaitForWatcherToStop();
+    if (!WaitForWatcherToStop()) {
+        SetLastError(ERROR_TIMEOUT);
+        ShowWin32Error(silent, L"Stopping the watcher", GetLastError());
+        return 31;
+    }
 
     if (!RemoveStartupCommand()) {
         ShowWin32Error(silent, L"Removing the startup entry", GetLastError());
@@ -810,17 +1006,66 @@ static int ShowStatus(BOOL silent)
     PromotionStats stats;
     BOOL running = IsWatcherRunning();
     BOOL scanned = CollectStatus(&stats);
-    WCHAR message[512];
+    WCHAR installDirectory[MAX_PATH];
+    WCHAR installedExecutable[MAX_PATH];
+    StartupStatus startupStatus = STARTUP_UNKNOWN;
+    DWORD installedAttributes = INVALID_FILE_ATTRIBUTES;
+    BOOL pathsAvailable;
+    BOOL installedWritable = FALSE;
+    BOOL healthy;
+    WCHAR message[1024];
 
     if (!scanned) {
         ZeroMemory(&stats, sizeof(stats));
     }
+
+    pathsAvailable = GetInstallPaths(
+        installDirectory,
+        (DWORD)(sizeof(installDirectory) / sizeof(installDirectory[0])),
+        installedExecutable,
+        (DWORD)(sizeof(installedExecutable) / sizeof(installedExecutable[0])));
+    if (pathsAvailable) {
+        startupStatus = GetStartupStatus(installedExecutable);
+        installedAttributes = GetFileAttributesW(installedExecutable);
+        installedWritable =
+            installedAttributes != INVALID_FILE_ATTRIBUTES &&
+            (installedAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+            (installedAttributes & FILE_ATTRIBUTE_READONLY) == 0;
+    }
+
+    healthy =
+        running &&
+        scanned &&
+        stats.errors == 0 &&
+        stats.total == stats.promoted &&
+        startupStatus == STARTUP_CONFIGURED &&
+        installedWritable;
 
     message[0] = L'\0';
     AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"Version: ");
     AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), APP_VERSION);
     AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nWatcher: ");
     AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), running ? L"running" : L"stopped");
+    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nStartup: ");
+    AppendPathPart(
+        message,
+        (DWORD)(sizeof(message) / sizeof(message[0])),
+        StartupStatusText(startupStatus));
+    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nInstalled file: ");
+    if (installedAttributes == INVALID_FILE_ATTRIBUTES ||
+        (installedAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"missing");
+    } else {
+        AppendPathPart(
+            message,
+            (DWORD)(sizeof(message) / sizeof(message[0])),
+            installedWritable ? L"present and writable" : L"read-only");
+    }
+    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nInstalled path: ");
+    AppendPathPart(
+        message,
+        (DWORD)(sizeof(message) / sizeof(message[0])),
+        pathsAvailable ? installedExecutable : L"unknown");
     AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nTray records: ");
     AppendUnsigned(message, (DWORD)(sizeof(message) / sizeof(message[0])), stats.total);
     AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nVisible records: ");
@@ -828,20 +1073,20 @@ static int ShowStatus(BOOL silent)
     AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nErrors: ");
     AppendUnsigned(message, (DWORD)(sizeof(message) / sizeof(message[0])), stats.errors);
 
-    ShowMessage(silent, running && stats.errors == 0 ? MB_ICONINFORMATION : MB_ICONWARNING, message);
-    return running && scanned && stats.errors == 0 && stats.total == stats.promoted ? 0 : 1;
+    ShowMessage(silent, healthy ? MB_ICONINFORMATION : MB_ICONWARNING, message);
+    return healthy ? 0 : 1;
 }
 
 static int SelfTest(BOOL silent)
 {
     HKEY root = NULL;
     HKEY testKey = NULL;
+    WCHAR source[MAX_PATH];
     DWORD disposition;
+    DWORD attempt;
     DWORD value = 0;
-    DWORD resultValue = 0;
-    DWORD valueType = 0;
-    DWORD valueSize = sizeof(resultValue);
-    PromotionStats stats;
+    BOOL watcherWasRunning = IsWatcherRunning();
+    BOOL startedWatcher = FALSE;
     BOOL passed = FALSE;
 
     if (RegCreateKeyExW(
@@ -880,19 +1125,51 @@ static int SelfTest(BOOL silent)
             RegCloseKey(testKey);
             testKey = NULL;
 
-            if (PromoteAll(root, FALSE, &stats) &&
-                RegOpenKeyExW(root, SELF_TEST_KEY_NAME, 0, KEY_QUERY_VALUE, &testKey) == ERROR_SUCCESS &&
-                RegQueryValueExW(
-                    testKey,
-                    PROMOTED_VALUE_NAME,
-                    NULL,
-                    &valueType,
-                    (BYTE *)&resultValue,
-                    &valueSize) == ERROR_SUCCESS &&
-                valueType == REG_DWORD &&
-                resultValue == 1) {
-                passed = TRUE;
+            if (watcherWasRunning ||
+                (GetModulePath(source, (DWORD)(sizeof(source) / sizeof(source[0]))) &&
+                 StartInstalledWatcher(source))) {
+                startedWatcher = !watcherWasRunning;
+
+                for (attempt = 0; attempt < STOP_WAIT_ATTEMPTS; attempt++) {
+                    DWORD resultValue = 0;
+                    DWORD valueType = 0;
+                    DWORD valueSize = sizeof(resultValue);
+
+                    if (RegOpenKeyExW(
+                            root,
+                            SELF_TEST_KEY_NAME,
+                            0,
+                            KEY_QUERY_VALUE,
+                            &testKey) == ERROR_SUCCESS) {
+                        if (RegQueryValueExW(
+                                testKey,
+                                PROMOTED_VALUE_NAME,
+                                NULL,
+                                &valueType,
+                                (BYTE *)&resultValue,
+                                &valueSize) == ERROR_SUCCESS &&
+                            valueType == REG_DWORD &&
+                            valueSize == sizeof(resultValue) &&
+                            resultValue == 1) {
+                            passed = TRUE;
+                        }
+                        RegCloseKey(testKey);
+                        testKey = NULL;
+                    }
+
+                    if (passed) {
+                        break;
+                    }
+                    Sleep(100);
+                }
             }
+        }
+    }
+
+    if (startedWatcher) {
+        SignalWatcherToStop();
+        if (!WaitForWatcherToStop()) {
+            passed = FALSE;
         }
     }
 
