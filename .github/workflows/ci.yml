@@ -12,6 +12,7 @@ jobs:
   build:
     name: Build ${{ matrix.architecture }}
     runs-on: windows-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -20,6 +21,12 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7.0.1
+
+      - name: Validate version metadata
+        shell: pwsh
+        run: |
+          $version = ./scripts/test-version.ps1
+          "TRAY_VERSION=$version" >> $env:GITHUB_ENV
 
       - name: Configure
         run: cmake -S . -B build -A ${{ matrix.architecture }}
@@ -34,13 +41,17 @@ jobs:
           $process = Start-Process `
             -FilePath .\build\Release\TrayIconPromoter.exe `
             -ArgumentList '--self-test', '--silent' `
-            -Wait `
+            -WindowStyle Hidden `
             -PassThru
+          if (-not $process.WaitForExit(15000)) {
+            $process.Kill($true)
+            throw 'Self-test did not exit within 15 seconds.'
+          }
           if ($process.ExitCode -ne 0) {
             throw "Self-test failed with exit code $($process.ExitCode)"
           }
 
-      - name: Run native argument and readiness tests
+      - name: Run native regression tests
         if: matrix.architecture == 'x64'
         run: ctest --test-dir build -C Release --output-on-failure
 
@@ -50,7 +61,8 @@ jobs:
         run: >-
           ./scripts/test-install.ps1
           -Executable ./build/Release/TrayIconPromoter.exe
-          -ExpectedVersion '1.1.1'
+          -FailureExecutable ./build/Release/TrayIconPromoterInstallerTests.exe
+          -ExpectedVersion $env:TRAY_VERSION
 
       - name: Upload executable
         uses: actions/upload-artifact@v7.0.2

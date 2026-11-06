@@ -10,6 +10,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $buildDirectory = Join-Path $projectRoot 'build-local'
 $distDirectory = Join-Path $projectRoot 'dist'
 $executable = Join-Path $distDirectory 'TrayIconPromoter.exe'
+$version = & (Join-Path $PSScriptRoot 'test-version.ps1')
 
 $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
 $windres = Get-Command windres.exe -ErrorAction SilentlyContinue
@@ -52,12 +53,11 @@ if ($LASTEXITCODE -ne 0) { throw "windres failed with exit code $LASTEXITCODE" }
     '-Wl,--dynamicbase' `
     '-Wl,--nxcompat' `
     '-Wl,--high-entropy-va' `
-    '-ladvapi32'
+    '-ladvapi32' `
+    '-lversion'
 if ($LASTEXITCODE -ne 0) { throw "gcc failed with exit code $LASTEXITCODE" }
 
-$hash = Get-FileHash -LiteralPath $executable -Algorithm SHA256
-$hashLine = "$($hash.Hash.ToLowerInvariant())  TrayIconPromoter.exe"
-Set-Content -LiteralPath (Join-Path $distDirectory 'SHA256SUMS.txt') -Value $hashLine -Encoding ascii
+$checksumTargets = @($executable)
 
 if ($Package) {
     $packageRoot = Join-Path $buildDirectory 'package'
@@ -67,7 +67,13 @@ if ($Package) {
     New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
     Copy-Item -LiteralPath $executable,(Join-Path $projectRoot 'README.md'),(Join-Path $projectRoot 'LICENSE') -Destination $packageRoot
     Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $packagePath -CompressionLevel Optimal
+    $checksumTargets += $packagePath
 }
 
+$hashes = @($checksumTargets | ForEach-Object { Get-FileHash -LiteralPath $_ -Algorithm SHA256 })
+$hashLines = @($hashes | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path -Leaf $_.Path)" })
+Set-Content -LiteralPath (Join-Path $distDirectory 'SHA256SUMS.txt') -Value $hashLines -Encoding ascii
+
+Write-Output "Built Tray Icon Promoter $version ($Architecture)."
 Get-Item -LiteralPath $executable | Select-Object FullName, Length, LastWriteTime
-$hash | Select-Object Algorithm, Hash
+$hashes | Select-Object Algorithm, Hash, Path

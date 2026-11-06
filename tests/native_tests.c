@@ -1,5 +1,6 @@
 #include "../src/tray_icon_promoter.c"
 #include <stdio.h>
+#include <wchar.h>
 
 #define CHECK(condition) do { if (!(condition)) { \
     fprintf(stderr, "Failed at line %d: %s\n", __LINE__, #condition); return 1; \
@@ -15,6 +16,8 @@ int main(int argc, char **argv)
     WCHAR command[MAX_PATH + 32];
     WCHAR tooLong[MAX_PATH + 80];
     DWORD index;
+    AppStatus status;
+    WCHAR json[4096];
 
     (void)argv;
     if (argc > 1) {
@@ -28,6 +31,10 @@ int main(int argc, char **argv)
     CHECK(ParseAction(L"app.exe --watch", &silent) == ACTION_WATCH);
     CHECK(ParseAction(L"app.exe --once", &silent) == ACTION_ONCE);
     CHECK(ParseAction(L"app.exe --self-test", &silent) == ACTION_SELF_TEST);
+    CHECK(ParseAction(L"app.exe --stop", &silent) == ACTION_STOP);
+    CHECK(ParseAction(L"app.exe --restart", &silent) == ACTION_RESTART);
+    CHECK(ParseAction(L"app.exe --status-json --silent", &silent) == ACTION_STATUS_JSON && silent);
+    CHECK(ParseAction(L"app.exe --stop --restart", &silent) == ACTION_INVALID);
     CHECK(ParseAction(L"app.exe --staus --silent", &silent) == ACTION_INVALID && silent);
     CHECK(ParseAction(L"app.exe --install --uninstall", &silent) == ACTION_INVALID);
     CHECK(ParseAction(L"app.exe --status --status", &silent) == ACTION_INVALID);
@@ -38,6 +45,20 @@ int main(int argc, char **argv)
     }
     tooLong[index] = L'\0';
     CHECK(ParseAction(tooLong, &silent) == ACTION_INVALID);
+
+    ZeroMemory(&status, sizeof(status));
+    lstrcpyW(status.path, L"C:\\test \"name\"\\\x03A9\n.exe");
+    lstrcpyW(status.installedVersion, L"1.0.0");
+    status.startup = STARTUP_MISSING;
+    status.recommendation = L"Repair installation.";
+    status.stats.errors = 4;
+    CHECK(BuildStatusJson(&status, json, 4096));
+    CHECK(wcsstr(json, L"\\\"name\\\"") != NULL);
+    CHECK(wcsstr(json, L"\\u03a9\\u000a") != NULL);
+    CHECK(wcsstr(json, L"\"errors\":4") != NULL);
+    CHECK(wcsstr(json, L"\"scan_complete\":false") != NULL);
+    CHECK(wcsstr(json, L"\"installed_version\":\"1.0.0\"") != NULL);
+    CHECK(!BuildStatusJson(&status, json, 8));
 
     CHECK(ready != NULL);
     CHECK(!WaitForWatcherToStart(GetCurrentProcess(), ready));
