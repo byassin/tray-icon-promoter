@@ -7,6 +7,7 @@ Contributions are welcome. Keep changes small, reviewable, and focused on the pr
 1. Create a branch from `main`.
 2. Build with CMake 3.20 or newer and a current Visual Studio C++ toolchain, or use `scripts/build.ps1` with MinGW-w64 for x64.
 3. Run the self-test and check the GUI process exit code with `Start-Process -Wait -PassThru`.
+   Run `ctest --test-dir build -C Release --output-on-failure` for argument validation and watcher readiness regressions.
 4. Run `./scripts/test-install.ps1 -Executable <path> -ExpectedVersion <version>` only from an isolated Windows account or CI runner with no existing Tray Icon Promoter installation.
 5. Test install, status, live promotion, logon startup, and uninstall on Windows 11.
 6. Run `git diff --check` and review the complete diff.

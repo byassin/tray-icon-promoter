@@ -45,7 +45,11 @@ jobs:
         run: >-
           ./scripts/test-install.ps1
           -Executable ./build/Release/TrayIconPromoter.exe
-          -ExpectedVersion '1.1.0'
+          -ExpectedVersion '1.1.1'
+
+      - name: Run native argument and readiness tests
+        if: matrix.architecture == 'x64'
+        run: ctest --test-dir build -C Release --output-on-failure
 
       - name: Package
         shell: pwsh

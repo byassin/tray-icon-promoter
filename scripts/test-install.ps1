@@ -26,7 +26,7 @@ function Invoke-GuiProcess {
         [string[]]$Arguments
     )
 
-    $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -PassThru
+    $process = Start-Process -WindowStyle Hidden -FilePath $FilePath -ArgumentList $Arguments -PassThru
     if (-not $process.WaitForExit(15000)) {
         $process.Kill()
         throw "$FilePath did not exit within 15 seconds."
@@ -46,6 +46,34 @@ New-Item -ItemType Directory -Path $testRoot | Out-Null
 $env:LOCALAPPDATA = $testRoot
 
 try {
+    foreach ($arguments in @(
+        @('--help', '--silent'),
+        @('--staus', '--silent'),
+        @('--install', '--uninstall', '--silent')
+    )) {
+        $expectedExit = if ($arguments[0] -eq '--help') { 0 } else { 2 }
+        $actualExit = Invoke-GuiProcess -FilePath $sourceExecutable -Arguments $arguments
+        if ($actualExit -ne $expectedExit -or (Test-Path -LiteralPath $installedExecutable)) {
+            throw 'Help or invalid arguments caused an unexpected exit or installation side effect.'
+        }
+    }
+
+    # A mutex with the stop-event name makes the child fail initialization.
+    # The installer must observe the child exit, rather than its temporary mutex.
+    $collision = [System.Threading.Mutex]::new($false, 'Local\TrayIconPromoter.Stop-8D37B978-83D7-4E36-A39C-F08BDB8B5911')
+    try {
+        $failedInstallExit = Invoke-GuiProcess -FilePath $sourceExecutable -Arguments @('--install', '--silent')
+        if ($failedInstallExit -ne 24) {
+            throw "Failed watcher startup returned $failedInstallExit instead of 24."
+        }
+        if (Get-Process -Name TrayIconPromoter -ErrorAction SilentlyContinue) {
+            throw 'Failed watcher startup left a child process behind.'
+        }
+    }
+    finally {
+        $collision.Dispose()
+    }
+
     $installExitCode = Invoke-GuiProcess -FilePath $sourceExecutable -Arguments @('--install', '--silent')
     if ($installExitCode -ne 0) {
         throw "Initial install failed with exit code $installExitCode."
@@ -64,6 +92,11 @@ try {
     if (@(Get-Process -Name TrayIconPromoter -ErrorAction SilentlyContinue).Count -ne 1) {
         throw 'Initial install did not leave exactly one watcher running.'
     }
+    $ready = [System.Threading.EventWaitHandle]::OpenExisting('Local\TrayIconPromoter.Ready-8D37B978-83D7-4E36-A39C-F08BDB8B5911')
+    try {
+        if (-not $ready.WaitOne(0)) { throw 'Install returned before watcher readiness.' }
+    }
+    finally { $ready.Dispose() }
 
     New-Item -Path $startupApprovedKeyPath -Force | Out-Null
     New-ItemProperty `
