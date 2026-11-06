@@ -65,7 +65,8 @@ if ($Package) {
     Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $packagePath -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
-    Copy-Item -LiteralPath $executable,(Join-Path $projectRoot 'README.md'),(Join-Path $projectRoot 'LICENSE') -Destination $packageRoot
+    Copy-Item -LiteralPath $executable,(Join-Path $projectRoot 'README.md'),(Join-Path $projectRoot 'LICENSE'),(Join-Path $projectRoot 'SECURITY.md'),(Join-Path $projectRoot 'CHANGELOG.md'),(Join-Path $projectRoot 'CONTRIBUTING.md') -Destination $packageRoot
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'docs') -Destination (Join-Path $packageRoot 'docs') -Recurse
     Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $packagePath -CompressionLevel Optimal
     $checksumTargets += $packagePath
 }

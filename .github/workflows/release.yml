@@ -71,6 +71,8 @@ jobs:
           Copy-Item .\build\Release\TrayIconPromoter.exe $package
           Copy-Item .\README.md $package
           Copy-Item .\LICENSE $package
+          Copy-Item .\SECURITY.md, .\CHANGELOG.md, .\CONTRIBUTING.md $package
+          Copy-Item .\docs "$package\docs" -Recurse
           Compress-Archive -Path "$package\*" -DestinationPath "TrayIconPromoter-$env:GITHUB_REF_NAME-${{ matrix.architecture }}.zip"
 
       - name: Upload package
