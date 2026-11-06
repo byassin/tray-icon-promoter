@@ -17,18 +17,8 @@ Download the ZIP for your architecture, extract it, and run `TrayIconPromoter.ex
 
 JSON reports include the installed path, which can contain your username. Review before sharing. See the [current README](https://github.com/byassin/tray-icon-promoter/blob/main/README.md) for a PowerShell export example and [the review](https://github.com/byassin/tray-icon-promoter/blob/main/docs/REVIEW-v1.2.0.md) for findings and regression coverage.
 
-## Documentation and screenshots — refreshed November 6, 2026
+## Documentation — refreshed November 6, 2026
 
-The original v1.2.0 application ZIPs and their attested `SHA256SUMS.txt` are unchanged. Their bundled README reflects the original build. Use the current online README or download `TrayIconPromoter-v1.2.0-documentation.zip` for the refreshed documentation, Status/Help screenshots, security policy, changelog, contributor guidance, and review record. The documentation-only archive has a separate `DOCUMENTATION-SHA256SUMS.txt`; it is not an application update and is not part of the original build attestation.
-
-The screenshots are real captures from the published x64 v1.2.0 executable. Paths and counts are examples from the capture machine. [Capture details](https://github.com/byassin/tray-icon-promoter/blob/main/docs/screenshots/README.md).
-
-### Status
-
-![Actual Tray Icon Promoter v1.2.0 Status window](https://raw.githubusercontent.com/byassin/tray-icon-promoter/main/docs/screenshots/v1.2.0-status.jpg)
-
-### Help
-
-![Actual Tray Icon Promoter v1.2.0 Help window](https://raw.githubusercontent.com/byassin/tray-icon-promoter/main/docs/screenshots/v1.2.0-help.jpg)
+The original v1.2.0 application ZIPs and their attested `SHA256SUMS.txt` are unchanged. Their bundled README reflects the original build. Use the current online README or download `TrayIconPromoter-v1.2.0-documentation.zip` for the refreshed documentation, security policy, changelog, contributor guidance, and review record. The documentation-only archive has a separate `DOCUMENTATION-SHA256SUMS.txt`; it is not an application update and is not part of the original build attestation.
 
 Full comparison: https://github.com/byassin/tray-icon-promoter/compare/v1.1.1...v1.2.0

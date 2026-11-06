@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Documentation
 
-- Added actual v1.2.0 Status and Help screenshots, current resource measurements, troubleshooting/exit-code guidance, and corrected PowerShell/checksum examples.
+- Updated resource measurements, troubleshooting/exit-code guidance, and PowerShell/checksum examples for v1.2.0.
 - Published updated documentation separately from the original attested v1.2.0 application packages.
 
 ## [1.2.0] - 2026-11-06
