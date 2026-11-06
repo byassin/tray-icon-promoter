@@ -49,7 +49,7 @@ jobs:
           -ExpectedVersion '1.1.0'
 
       - name: Upload executable
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: TrayIconPromoter-${{ matrix.architecture }}
           path: build/Release/TrayIconPromoter.exe
