@@ -13,7 +13,7 @@ Contributions are welcome. Keep changes small, reviewable, and focused on the pr
 6. Run `git diff --check` and review the complete diff.
 7. Update documentation and `CHANGELOG.md` for user-visible changes. Run `./scripts/test-version.ps1` to verify the version metadata; workflows derive their expected version from it.
 
-When visible dialogs change, replace the versioned Status and Help screenshots with real captures from the public release executable. Record capture date, version, and executable SHA-256 in `docs/screenshots/README.md`; review the screenshot for private data before publishing. Do not replace existing release ZIPs or their attested checksum manifest for documentation-only changes. Publish a separate documentation archive and link the current docs from the release notes.
+Do not replace existing application release ZIPs or their attested checksum manifest for documentation-only changes. Publish a separate documentation archive and link the current docs from the release notes.
 
 ## Pull requests
 

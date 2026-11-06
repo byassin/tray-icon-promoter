@@ -7,19 +7,7 @@ Tray Icon Promoter keeps **all Windows 11 notification-area icons visible**, inc
 
 It is a tiny, event-driven Win32 utility. It does not poll, inject code into Explorer, require administrator rights, connect to the internet, or keep PowerShell running in the background.
 
-Current release: [v1.2.0](https://github.com/byassin/tray-icon-promoter/releases/tag/v1.2.0). The screenshots below were captured from the published Windows x64 executable on November 6, 2026.
-
-## Screenshots
-
-### Installation health
-
-![Tray Icon Promoter v1.2.0 status showing a running and ready watcher, configured startup, 95 promoted records, and zero errors](docs/screenshots/v1.2.0-status.jpg)
-
-### Commands
-
-![Tray Icon Promoter v1.2.0 help showing install, uninstall, watch, once, status, JSON diagnostics, stop, restart, self-test, and help commands](docs/screenshots/v1.2.0-help.jpg)
-
-These are actual app windows, not mockups. Paths and record counts reflect the capture machine; yours will differ. See [capture details](https://github.com/byassin/tray-icon-promoter/blob/main/docs/screenshots/README.md).
+Current release: [v1.2.0](https://github.com/byassin/tray-icon-promoter/releases/tag/v1.2.0).
 
 ## Why this exists
 
@@ -220,7 +208,7 @@ Run `ctest --test-dir build -C Release --output-on-failure` for parser/JSON/read
 3. Tag the merged commit as `vX.Y.Z` and push the tag. Release validation requires an exact match between the tag and project version.
 4. GitHub Actions builds x64 and ARM64 packages, creates `SHA256SUMS.txt`, attests the release artifacts, and publishes a GitHub Release.
 5. Download the public assets without repository credentials, verify both ZIP hashes and attestations, then install and health-check the published x64 build.
-6. Refresh the README's current-release link, package/test-version examples, resource snapshot, screenshots and capture metadata, and `SECURITY.md` supported-version line. Publish current documentation and screenshots with the release notes; keep existing attested application assets immutable.
+6. Refresh the README's current-release link, package/test-version examples, resource snapshot, and `SECURITY.md` supported-version line. Publish current documentation with the release notes; keep existing attested application assets immutable.
 
 ## Security and design boundaries
 
