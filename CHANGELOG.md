@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-06
+
+### Added
+
+- Temporary `--stop` and preference-preserving `--restart` commands.
+- `--status-json` diagnostics with actual installed version, watcher readiness, partial scan counts, and a recovery recommendation.
+- Isolated registry recovery, atomic installer, and lifecycle rollback/operation-lock/diagnostic regression tests.
+- Shared version validation that prevents publishing a tag with mismatched executable metadata.
+
+### Fixed
+
+- Persistent registry enumeration errors terminate scans instead of hanging the watcher or status command.
+- Watcher readiness resets during recovery; registry permission changes trigger a rescan and retained stop events no longer abort a fresh watcher.
+- Installer stages replacements before stopping the watcher and restores previous executable/startup state on failure. Concurrent lifecycle operations and self-tests are serialized.
+- Uninstall handles read-only files, reports deletion failures, and succeeds when already uninstalled.
+- Diagnostic scans retain error counts instead of replacing failed scans with zeroes.
+- Lifecycle tests refuse all existing startup values, including empty or disabled registrations.
+- Portable package checksums include the ZIP; CI self-tests and jobs have bounded runtimes.
+
 ## [1.1.1] - 2026-11-05
 
 ### Fixed
@@ -60,7 +79,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Install, uninstall, watch, one-shot, status, and self-test commands.
 - x64 and ARM64 CI/release builds with SHA-256 checksums.
 
-[Unreleased]: https://github.com/byassin/tray-icon-promoter/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/byassin/tray-icon-promoter/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/byassin/tray-icon-promoter/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/byassin/tray-icon-promoter/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/byassin/tray-icon-promoter/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/byassin/tray-icon-promoter/compare/v1.0.0...v1.0.1

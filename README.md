@@ -23,6 +23,10 @@ Tray Icon Promoter watches the current user's notification-icon registry tree. W
 - Safe startup: a named mutex prevents duplicate watcher instances.
 - Verified repair: installation waits for the old watcher to stop and the replacement watcher to arm notifications and complete its initial scan.
 - Actionable status: reports watcher, startup, installed-file, and tray-record health.
+- Recovery: reconnects after the notification registry tree is replaced or permissions change.
+- Safe updates: staged executable replacement and rollback preserve the previous installation if an update fails.
+- Local controls: stop temporarily or restart without changing sign-in preferences.
+- Scriptable diagnostics: export JSON with installed version, readiness, counts, and a suggested recovery action.
 - Offline and private: no telemetry, analytics, update checker, or network code.
 - Publicly buildable: C source, CMake project, CI, release workflow, and checksums are included.
 
@@ -40,6 +44,8 @@ The executable copies itself to:
 ```
 
 It then adds a per-user startup entry and launches the watcher. Administrator privileges are not required.
+
+To update or repair, run a newly downloaded copy with `--install`. The app stages and backs up the executable before stopping the watcher, then replaces it and verifies readiness. If installation fails, it restores the previous file and startup values and attempts to restart the previous watcher. If recovery cannot complete, the error message identifies the retained recovery executable. Install, uninstall, stop, restart, and self-test operations are serialized.
 
 ### Verify a release
 
@@ -75,11 +81,32 @@ Run these from Command Prompt or PowerShell. Add `--silent` to suppress message 
 | `TrayIconPromoter.exe --watch` | Runs the watcher. Duplicate instances exit immediately. |
 | `TrayIconPromoter.exe --once` | Promotes all currently registered tray icons and exits. |
 | `TrayIconPromoter.exe --status` | Checks watcher, startup, installed-file, and tray-record health. |
+| `TrayIconPromoter.exe --status-json` | Writes JSON diagnostics to standard output. |
+| `TrayIconPromoter.exe --stop` | Stops monitoring temporarily; leaves the executable and startup preferences intact. |
+| `TrayIconPromoter.exe --restart` | Restarts the installed watcher without changing startup preferences. |
 | `TrayIconPromoter.exe --self-test` | Verifies the live event-driven watcher and read-only executable repair using temporary test data. |
 | `TrayIconPromoter.exe --help` | Shows supported commands and usage. |
 | `TrayIconPromoter.exe --uninstall` | Stops the watcher and removes its startup entry. |
 
-`--status` returns exit code `0` only when the watcher is running, startup is correctly configured and enabled, the installed executable is present and writable, every tray record is promoted, and no registry scan errors occurred. With `--silent`, diagnostic message boxes are suppressed and the exit code remains available to automation.
+`--status` returns exit code `0` only when the watcher is running and ready, startup is correctly configured and enabled, the installed executable is present and writable, every tray record is promoted, and the registry scan completes without errors. It reports the executing diagnostic version separately from the installed file version, preserves partial counts on scan failure, and suggests a recovery action. With `--silent`, message boxes are suppressed and the exit code remains available to automation.
+
+`--stop` lasts until `--restart`, another watcher launch, or the next sign-in when startup is enabled. It does not hide icons that are already promoted. `--restart` preserves a disabled Startup Apps preference; use Windows Startup Apps to re-enable sign-in startup, or explicitly repair with `--install`.
+
+### Export diagnostics
+
+Use PowerShell to capture the GUI executable's standard output:
+
+```powershell
+$check = Start-Process `
+  -FilePath "$env:LOCALAPPDATA\TrayIconPromoter\TrayIconPromoter.exe" `
+  -ArgumentList '--status-json', '--silent' `
+  -RedirectStandardOutput .\status.json `
+  -Wait -PassThru
+Get-Content .\status.json -Raw | ConvertFrom-Json
+$check.ExitCode
+```
+
+JSON diagnostics return `0` when healthy, `1` when unhealthy, or `3` if output cannot be written. The report contains versions, installed path, watcher readiness, startup status, aggregate counts, and a recommendation. Review the installed path before sharing it because it can contain your Windows username. Reports contain no per-application icon inventory and are never sent anywhere automatically.
 
 Choose one action per invocation. Unknown arguments, unmatched quotes, oversized arguments, and multiple actions return exit code `2` without installing, uninstalling, or launching a watcher.
 
@@ -98,7 +125,7 @@ Measured results for each release should be recorded in its release notes rather
 
 ## Build locally
 
-Builds require Windows, CMake 3.20 or newer, and either a Visual Studio C++ toolchain or a current MinGW-w64 toolchain.
+Builds require Windows and either a Visual Studio C++ toolchain with CMake 3.20 or newer, or a current MinGW-w64 toolchain for the direct PowerShell build helper.
 
 ### Visual Studio / Build Tools
 
@@ -117,7 +144,7 @@ Put `gcc.exe` and `windres.exe` on `PATH`, then run:
 ./scripts/build.ps1 -Package
 ```
 
-The MinGW helper currently builds x64 only. The executable, checksum file, and optional ZIP package are written to `dist`.
+The MinGW helper currently builds x64 only. The executable, checksum file, and optional ZIP package are written to `dist`. Its checksum file covers the executable and, when `-Package` is used, the ZIP; public release checksum files cover both architecture ZIPs.
 
 ## Test locally
 
@@ -137,16 +164,17 @@ The full install lifecycle test modifies the current user's startup registration
 ```powershell
 .\scripts\test-install.ps1 `
   -Executable .\build\Release\TrayIconPromoter.exe `
-  -ExpectedVersion '1.1.1'
+  -ExpectedVersion '1.2.0' `
+  -FailureExecutable .\build\Release\TrayIconPromoterInstallerTests.exe
 ```
 
-Run argument-parser and readiness success, timeout, and exited-child tests with `ctest --test-dir build -C Release --output-on-failure`. The install lifecycle test also checks help/invalid-argument side effects and deliberately fails watcher initialization before testing recovery.
+Run `ctest --test-dir build -C Release --output-on-failure` for parser/JSON/readiness tests, isolated registry deletion/recreation recovery, and atomic replacement/snapshot restoration. Registry tests use unique temporary keys, never the real notification tree. The install lifecycle test also checks failed-startup rollback, stop/restart, startup preferences, JSON output, concurrent-operation rejection, and read-only repair.
 
 ## Release process
 
-1. Update the version in `CMakeLists.txt`, `src/tray_icon_promoter.c`, `resources/app.manifest`, `resources/version.rc`, and `CHANGELOG.md`, plus `-ExpectedVersion` in both GitHub Actions workflows.
+1. Update the version in `CMakeLists.txt`, `src/tray_icon_promoter.c`, `resources/app.manifest`, `resources/version.rc`, and `CHANGELOG.md`. Run `./scripts/test-version.ps1` to validate alignment; workflows derive their test version from this check.
 2. Merge through a pull request only after the required `Build x64` and `Build ARM64` checks pass. The x64 job also runs the self-test, native argument/readiness tests, and install lifecycle test.
-3. Tag the merged commit as `vX.Y.Z` and push the tag.
+3. Tag the merged commit as `vX.Y.Z` and push the tag. Release validation requires an exact match between the tag and project version.
 4. GitHub Actions builds x64 and ARM64 packages, creates `SHA256SUMS.txt`, attests the release artifacts, and publishes a GitHub Release.
 5. Download the public assets without repository credentials, verify both ZIP hashes and attestations, then install and health-check the published x64 build.
 
@@ -157,7 +185,8 @@ Tray Icon Promoter is limited to the following per-user state:
 - reads tray records and writes `IsPromoted` plus a temporary refresh value under `HKCU\Control Panel\NotifyIconSettings`;
 - creates or removes only the `TrayIconPromoter` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`;
 - reads or removes only the `TrayIconPromoter` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run`;
-- creates, replaces, or removes its own executable under `%LOCALAPPDATA%\TrayIconPromoter`.
+- creates, stages, backs up, replaces, or removes its own executable under `%LOCALAPPDATA%\TrayIconPromoter`;
+- creates and removes temporary files and isolated registry keys during explicitly requested self-tests and developer tests.
 
 It does not modify Explorer binaries, hook other processes, load a DLL into Explorer, request elevation, or contact a server. See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
@@ -168,6 +197,8 @@ It does not modify Explorer binaries, hook other processes, load a DLL into Expl
 This tool always promotes every registered icon. It is intentionally not an icon-by-icon rules engine.
 
 GitHub's x64 Windows runner executes the self-test, native argument/readiness tests, and install lifecycle test. CI cross-builds and packages ARM64, but does not execute the ARM64 binary on native ARM64 hardware.
+
+See [the v1.2 review](docs/REVIEW-v1.2.0.md) for the reviewed issues, changes, and regression coverage.
 
 ## License
 

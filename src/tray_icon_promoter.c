@@ -1,7 +1,7 @@
 #include <windows.h>
 
 #define APP_NAME L"Tray Icon Promoter"
-#define APP_VERSION L"1.1.1"
+#define APP_VERSION L"1.2.0"
 #define REGISTRY_PATH L"Control Panel\\NotifyIconSettings"
 #define RUN_KEY_PATH L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 #define STARTUP_APPROVED_KEY_PATH L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run"
@@ -34,6 +34,9 @@ typedef enum RequestedAction {
     ACTION_STATUS,
     ACTION_SELF_TEST,
     ACTION_HELP,
+    ACTION_STOP,
+    ACTION_RESTART,
+    ACTION_STATUS_JSON,
     ACTION_INVALID
 } RequestedAction;
 
@@ -225,8 +228,8 @@ static BOOL PromoteAll(HKEY root, BOOL touchEveryEntry, PromotionStats *stats)
         if (enumResult != ERROR_SUCCESS) {
             stats->errors++;
             completed = FALSE;
-            index++;
-            continue;
+            /* A deleted/inaccessible root keeps returning the same error. */
+            break;
         }
 
         stats->total++;
@@ -314,18 +317,13 @@ static BOOL PromoteOnce(BOOL touchEveryEntry, PromotionStats *stats)
     return result;
 }
 
-static BOOL CollectStatus(PromotionStats *stats)
+static BOOL CollectStatusFromRoot(HKEY root, PromotionStats *stats)
 {
-    HKEY root = NULL;
     DWORD index = 0;
     WCHAR subKeyName[256];
     BOOL completed = TRUE;
 
     ZeroMemory(stats, sizeof(*stats));
-
-    if (!OpenNotificationRoot(KEY_ENUMERATE_SUB_KEYS, &root)) {
-        return FALSE;
-    }
 
     for (;;) {
         DWORD nameLength = (DWORD)(sizeof(subKeyName) / sizeof(subKeyName[0]));
@@ -346,8 +344,7 @@ static BOOL CollectStatus(PromotionStats *stats)
         if (enumResult != ERROR_SUCCESS) {
             stats->errors++;
             completed = FALSE;
-            index++;
-            continue;
+            break;
         }
 
         stats->total++;
@@ -373,6 +370,10 @@ static BOOL CollectStatus(PromotionStats *stats)
                     valueSize == sizeof(value) &&
                     value == 1) {
                     stats->promoted++;
+                } else if (queryResult != ERROR_SUCCESS &&
+                    queryResult != ERROR_FILE_NOT_FOUND && queryResult != ERROR_MORE_DATA) {
+                    stats->errors++;
+                    completed = FALSE;
                 }
 
                 RegCloseKey(iconKey);
@@ -385,6 +386,19 @@ static BOOL CollectStatus(PromotionStats *stats)
         index++;
     }
 
+    return completed;
+}
+
+static BOOL CollectStatus(PromotionStats *stats)
+{
+    HKEY root = NULL;
+    BOOL completed;
+    ZeroMemory(stats, sizeof(*stats));
+    if (!OpenNotificationRoot(KEY_ENUMERATE_SUB_KEYS, &root)) {
+        stats->errors = 1;
+        return FALSE;
+    }
+    completed = CollectStatusFromRoot(root, stats);
     RegCloseKey(root);
     return completed;
 }
@@ -398,6 +412,18 @@ static BOOL IsWatcherRunning(void)
 
     CloseHandle(mutex);
     return TRUE;
+}
+
+static BOOL IsWatcherReady(void)
+{
+    HANDLE readyEvent = OpenEventW(SYNCHRONIZE, FALSE, READY_EVENT_NAME);
+    BOOL ready;
+    if (readyEvent == NULL) {
+        return FALSE;
+    }
+    ready = WaitForSingleObject(readyEvent, 0) == WAIT_OBJECT_0;
+    CloseHandle(readyEvent);
+    return ready && IsWatcherRunning();
 }
 
 static void SignalWatcherToStop(void)
@@ -423,14 +449,18 @@ static BOOL WaitForWatcherToStop(void)
     return !IsWatcherRunning();
 }
 
-static int WatchForever(void)
+static int WatchRegistryTree(
+    const WCHAR *registryPath,
+    const WCHAR *mutexName,
+    const WCHAR *stopEventName,
+    const WCHAR *readyEventName)
 {
     HANDLE mutex;
     HANDLE stopEvent;
     HANDLE readyEvent;
     BOOL firstPass = TRUE;
 
-    mutex = CreateMutexW(NULL, TRUE, MUTEX_NAME);
+    mutex = CreateMutexW(NULL, TRUE, mutexName);
     if (mutex == NULL) {
         return 10;
     }
@@ -440,14 +470,15 @@ static int WatchForever(void)
         return 0;
     }
 
-    stopEvent = CreateEventW(NULL, TRUE, FALSE, STOP_EVENT_NAME);
+    stopEvent = CreateEventW(NULL, TRUE, FALSE, stopEventName);
     if (stopEvent == NULL) {
         ReleaseMutex(mutex);
         CloseHandle(mutex);
         return 11;
     }
+    ResetEvent(stopEvent);
 
-    readyEvent = CreateEventW(NULL, TRUE, FALSE, READY_EVENT_NAME);
+    readyEvent = CreateEventW(NULL, TRUE, FALSE, readyEventName);
     if (readyEvent == NULL) {
         CloseHandle(stopEvent);
         ReleaseMutex(mutex);
@@ -466,7 +497,10 @@ static int WatchForever(void)
         DWORD waitResult;
         PromotionStats ignored;
 
-        if (!OpenNotificationRoot(KEY_NOTIFY | KEY_ENUMERATE_SUB_KEYS, &root)) {
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, registryPath, 0,
+                KEY_NOTIFY | KEY_ENUMERATE_SUB_KEYS, &root) != ERROR_SUCCESS) {
+            ResetEvent(readyEvent);
+            firstPass = TRUE;
             if (WaitForSingleObject(stopEvent, ROOT_RETRY_MILLISECONDS) == WAIT_OBJECT_0) {
                 break;
             }
@@ -475,6 +509,7 @@ static int WatchForever(void)
 
         changedEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
         if (changedEvent == NULL) {
+            ResetEvent(readyEvent);
             RegCloseKey(root);
             if (WaitForSingleObject(stopEvent, ROOT_RETRY_MILLISECONDS) == WAIT_OBJECT_0) {
                 break;
@@ -485,11 +520,13 @@ static int WatchForever(void)
         notifyResult = RegNotifyChangeKeyValue(
             root,
             TRUE,
-            REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
+            REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_SECURITY,
             changedEvent,
             TRUE);
 
         if (notifyResult != ERROR_SUCCESS) {
+            ResetEvent(readyEvent);
+            firstPass = TRUE;
             CloseHandle(changedEvent);
             RegCloseKey(root);
             if (WaitForSingleObject(stopEvent, ROOT_RETRY_MILLISECONDS) == WAIT_OBJECT_0) {
@@ -500,8 +537,11 @@ static int WatchForever(void)
 
         if (PromoteAll(root, firstPass, &ignored)) {
             SetEvent(readyEvent);
+            firstPass = FALSE;
+        } else {
+            ResetEvent(readyEvent);
+            firstPass = TRUE;
         }
-        firstPass = FALSE;
 
         waitHandles[0] = stopEvent;
         waitHandles[1] = changedEvent;
@@ -515,6 +555,7 @@ static int WatchForever(void)
         }
 
         if (waitResult != WAIT_OBJECT_0 + 1) {
+            ResetEvent(readyEvent);
             if (WaitForSingleObject(stopEvent, ROOT_RETRY_MILLISECONDS) == WAIT_OBJECT_0) {
                 break;
             }
@@ -532,6 +573,11 @@ static int WatchForever(void)
     ReleaseMutex(mutex);
     CloseHandle(mutex);
     return 0;
+}
+
+static int WatchForever(void)
+{
+    return WatchRegistryTree(REGISTRY_PATH, MUTEX_NAME, STOP_EVENT_NAME, READY_EVENT_NAME);
 }
 
 static BOOL BuildWatcherCommand(
@@ -618,6 +664,7 @@ static StartupStatus GetStartupStatus(const WCHAR *installedExecutable)
     if (result != ERROR_SUCCESS ||
         type != REG_SZ ||
         size < sizeof(WCHAR) ||
+        size % sizeof(WCHAR) != 0 ||
         size > sizeof(actualCommand) ||
         actualCommand[(size / sizeof(WCHAR)) - 1] != L'\0' ||
         !StringEquals(actualCommand, expectedCommand)) {
@@ -845,7 +892,137 @@ static BOOL StartInstalledWatcher(const WCHAR *installedExecutable)
     return result;
 }
 
-static BOOL CopyInstalledExecutable(const WCHAR *source, const WCHAR *destination)
+typedef struct RegistryValueSnapshot {
+    BOOL exists;
+    DWORD type;
+    DWORD size;
+    BYTE *data;
+} RegistryValueSnapshot;
+
+static void FreeRegistrySnapshot(RegistryValueSnapshot *snapshot)
+{
+    if (snapshot->data != NULL) {
+        HeapFree(GetProcessHeap(), 0, snapshot->data);
+    }
+    ZeroMemory(snapshot, sizeof(*snapshot));
+}
+
+static BOOL CaptureRegistryValue(const WCHAR *path, RegistryValueSnapshot *snapshot)
+{
+    HKEY key = NULL;
+    LSTATUS result;
+    ZeroMemory(snapshot, sizeof(*snapshot));
+    result = RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_QUERY_VALUE, &key);
+    if (result == ERROR_FILE_NOT_FOUND) return TRUE;
+    if (result == ERROR_SUCCESS) {
+        result = RegQueryValueExW(key, RUN_VALUE_NAME, NULL, &snapshot->type, NULL, &snapshot->size);
+        if (result == ERROR_SUCCESS) {
+            /* Refuse unreasonable snapshots before changing the installation. */
+            if (snapshot->size > 1024 * 1024) {
+                result = ERROR_MORE_DATA;
+            } else {
+                snapshot->data = (BYTE *)HeapAlloc(GetProcessHeap(), 0, snapshot->size == 0 ? 1 : snapshot->size);
+                if (snapshot->data == NULL) result = ERROR_NOT_ENOUGH_MEMORY;
+                else {
+                    result = RegQueryValueExW(key, RUN_VALUE_NAME, NULL, &snapshot->type,
+                        snapshot->data, &snapshot->size);
+                    snapshot->exists = result == ERROR_SUCCESS;
+                }
+            }
+        }
+        RegCloseKey(key);
+    }
+    if (result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND) return TRUE;
+    FreeRegistrySnapshot(snapshot);
+    SetLastError((DWORD)result);
+    return FALSE;
+}
+
+static BOOL RestoreRegistryValue(const WCHAR *path, const RegistryValueSnapshot *snapshot)
+{
+    HKEY key = NULL;
+    LSTATUS result;
+    if (snapshot->exists) {
+        result = RegCreateKeyExW(HKEY_CURRENT_USER, path, 0, NULL, REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE, NULL, &key, NULL);
+        if (result == ERROR_SUCCESS) {
+            result = RegSetValueExW(key, RUN_VALUE_NAME, 0, snapshot->type, snapshot->data, snapshot->size);
+            RegCloseKey(key);
+        }
+    } else {
+        result = RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_SET_VALUE, &key);
+        if (result == ERROR_SUCCESS) {
+            result = RegDeleteValueW(key, RUN_VALUE_NAME);
+            RegCloseKey(key);
+        }
+    }
+    if (result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND) return TRUE;
+    SetLastError((DWORD)result);
+    return FALSE;
+}
+
+static HANDLE AcquireOperationLock(void)
+{
+    HANDLE mutex = CreateMutexW(NULL, FALSE,
+        L"Local\\TrayIconPromoter.Setup-8D37B978-83D7-4E36-A39C-F08BDB8B5911");
+    DWORD result;
+    if (mutex == NULL) return NULL;
+    result = WaitForSingleObject(mutex, 10000);
+    if (result == WAIT_OBJECT_0 || result == WAIT_ABANDONED) return mutex;
+    {
+        DWORD error = result == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+        CloseHandle(mutex);
+        SetLastError(error);
+    }
+    return NULL;
+}
+
+static void ReleaseOperationLock(HANDLE mutex)
+{
+    ReleaseMutex(mutex);
+    CloseHandle(mutex);
+}
+
+static void DeleteTemporaryExecutable(const WCHAR *path)
+{
+    DWORD attributes = GetFileAttributesW(path);
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_READONLY) != 0) {
+        SetFileAttributesW(path, attributes & ~FILE_ATTRIBUTE_READONLY);
+    }
+    DeleteFileW(path);
+}
+
+static BOOL StageExecutable(const WCHAR *source, const WCHAR *destination, WCHAR *staged)
+{
+    WCHAR directory[MAX_PATH];
+    DWORD length = (DWORD)lstrlenW(destination);
+    DWORD error;
+    if (length >= MAX_PATH) {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return FALSE;
+    }
+    lstrcpynW(directory, destination, MAX_PATH);
+    while (length > 0 && directory[length - 1] != L'\\' && directory[length - 1] != L'/') length--;
+    if (length == 0) {
+        SetLastError(ERROR_BAD_PATHNAME);
+        return FALSE;
+    }
+    directory[length] = L'\0';
+    if (GetTempFileNameW(directory, L"TIP", 0, staged) == 0) return FALSE;
+    if (CopyFileW(source, staged, FALSE)) {
+        DWORD attributes = GetFileAttributesW(staged);
+        if (attributes != INVALID_FILE_ATTRIBUTES &&
+            ((attributes & FILE_ATTRIBUTE_READONLY) == 0 ||
+             SetFileAttributesW(staged, attributes & ~FILE_ATTRIBUTE_READONLY))) return TRUE;
+    }
+    error = GetLastError();
+    DeleteTemporaryExecutable(staged);
+    staged[0] = L'\0';
+    SetLastError(error);
+    return FALSE;
+}
+
+static BOOL CommitStagedExecutable(const WCHAR *staged, const WCHAR *destination)
 {
     DWORD originalAttributes = GetFileAttributesW(destination);
     BOOL clearedReadOnly = FALSE;
@@ -866,7 +1043,7 @@ static BOOL CopyInstalledExecutable(const WCHAR *source, const WCHAR *destinatio
     }
 
     for (attempt = 0; attempt < STOP_WAIT_ATTEMPTS; attempt++) {
-        if (CopyFileW(source, destination, FALSE)) {
+        if (MoveFileExW(staged, destination, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             copied = TRUE;
             break;
         }
@@ -882,18 +1059,21 @@ static BOOL CopyInstalledExecutable(const WCHAR *source, const WCHAR *destinatio
         return FALSE;
     }
 
-    {
-        DWORD installedAttributes = GetFileAttributesW(destination);
-        if (installedAttributes == INVALID_FILE_ATTRIBUTES) {
-            return FALSE;
-        }
-        if ((installedAttributes & FILE_ATTRIBUTE_READONLY) != 0 &&
-            !SetFileAttributesW(destination, installedAttributes & ~FILE_ATTRIBUTE_READONLY)) {
-            return FALSE;
-        }
-    }
-
+    /* StageExecutable already made the committed file writable. */
     return TRUE;
+}
+
+static BOOL CopyInstalledExecutable(const WCHAR *source, const WCHAR *destination)
+{
+    WCHAR staged[MAX_PATH];
+    BOOL copied;
+    DWORD error;
+    if (!StageExecutable(source, destination, staged)) return FALSE;
+    copied = CommitStagedExecutable(staged, destination);
+    error = GetLastError();
+    if (!copied) DeleteTemporaryExecutable(staged);
+    if (!copied) SetLastError(error);
+    return copied;
 }
 
 static int Install(BOOL silent)
@@ -901,6 +1081,22 @@ static int Install(BOOL silent)
     WCHAR source[MAX_PATH];
     WCHAR installDirectory[MAX_PATH];
     WCHAR installedExecutable[MAX_PATH];
+    WCHAR staged[MAX_PATH] = L"";
+    WCHAR backup[MAX_PATH] = L"";
+    RegistryValueSnapshot runSnapshot;
+    RegistryValueSnapshot approvalSnapshot;
+    DWORD oldAttributes;
+    DWORD failure = ERROR_SUCCESS;
+    const WCHAR *operation = L"Preparing installation";
+    BOOL wasRunning = IsWatcherRunning();
+    BOOL stopped = FALSE;
+    BOOL replaced = FALSE;
+    BOOL startupTouched = FALSE;
+    BOOL snapshotsCaptured = FALSE;
+    BOOL recoveryFailed = FALSE;
+    int exitCode = 20;
+    ZeroMemory(&runSnapshot, sizeof(runSnapshot));
+    ZeroMemory(&approvalSnapshot, sizeof(approvalSnapshot));
 
     if (!GetModulePath(source, (DWORD)(sizeof(source) / sizeof(source[0]))) ||
         !GetInstallPaths(
@@ -912,40 +1108,153 @@ static int Install(BOOL silent)
         return 20;
     }
 
-    SignalWatcherToStop();
-    if (!WaitForWatcherToStop()) {
-        SetLastError(ERROR_TIMEOUT);
-        ShowWin32Error(silent, L"Stopping the existing watcher", GetLastError());
-        return 25;
-    }
-
     if (!CreateDirectoryW(installDirectory, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
         ShowWin32Error(silent, L"Creating the installation directory", GetLastError());
         return 21;
     }
 
+    oldAttributes = GetFileAttributesW(installedExecutable);
+    if (oldAttributes == INVALID_FILE_ATTRIBUTES &&
+        GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) goto failed;
+    if (!CaptureRegistryValue(RUN_KEY_PATH, &runSnapshot) ||
+        !CaptureRegistryValue(STARTUP_APPROVED_KEY_PATH, &approvalSnapshot)) goto failed;
+    snapshotsCaptured = TRUE;
+
     if (!StringEquals(source, installedExecutable)) {
-        if (!CopyInstalledExecutable(source, installedExecutable)) {
-            ShowWin32Error(silent, L"Copying the executable", GetLastError());
-            return 22;
+        operation = L"Staging the executable";
+        exitCode = 22;
+        if (!StageExecutable(source, installedExecutable, staged)) goto failed;
+        if (oldAttributes != INVALID_FILE_ATTRIBUTES &&
+            !StageExecutable(installedExecutable, installedExecutable, backup)) goto failed;
+    }
+
+    operation = L"Stopping the existing watcher";
+    exitCode = 25;
+    SignalWatcherToStop();
+    if (!WaitForWatcherToStop()) {
+        SetLastError(ERROR_TIMEOUT);
+        goto failed;
+    }
+    stopped = TRUE;
+
+    if (staged[0] != L'\0') {
+        operation = L"Replacing the executable";
+        exitCode = 22;
+        if (!CommitStagedExecutable(staged, installedExecutable)) goto failed;
+        replaced = TRUE;
+        staged[0] = L'\0';
+    } else if (oldAttributes != INVALID_FILE_ATTRIBUTES &&
+               (oldAttributes & FILE_ATTRIBUTE_READONLY) != 0) {
+        if (!SetFileAttributesW(installedExecutable, oldAttributes & ~FILE_ATTRIBUTE_READONLY)) {
+            operation = L"Clearing the read-only executable attribute";
+            exitCode = 22;
+            goto failed;
         }
     }
 
+    operation = L"Creating the startup entry";
+    exitCode = 23;
+    startupTouched = TRUE;
     if (!SetStartupCommand(installedExecutable)) {
-        ShowWin32Error(silent, L"Creating the startup entry", GetLastError());
-        return 23;
+        goto failed;
     }
 
+    operation = L"Starting the watcher";
+    exitCode = 24;
     if (!StartInstalledWatcher(installedExecutable)) {
-        ShowWin32Error(silent, L"Starting the watcher", GetLastError());
-        return 24;
+        goto failed;
     }
 
+    if (backup[0] != L'\0') DeleteTemporaryExecutable(backup);
+    FreeRegistrySnapshot(&runSnapshot);
+    FreeRegistrySnapshot(&approvalSnapshot);
     ShowMessage(
         silent,
         MB_ICONINFORMATION,
         L"Tray Icon Promoter is installed and running.\n\n"
         L"It will start automatically when you sign in and will keep new tray icons visible.");
+    return 0;
+
+failed:
+    failure = GetLastError();
+    {
+        BOOL restored = TRUE;
+        if (replaced) {
+            if (backup[0] != L'\0') {
+                restored = CopyInstalledExecutable(backup, installedExecutable);
+                if (restored && oldAttributes != INVALID_FILE_ATTRIBUTES) {
+                    restored = SetFileAttributesW(installedExecutable, oldAttributes);
+                }
+            } else {
+                DeleteTemporaryExecutable(installedExecutable);
+                restored = GetFileAttributesW(installedExecutable) == INVALID_FILE_ATTRIBUTES;
+            }
+        } else if (stopped && oldAttributes != INVALID_FILE_ATTRIBUTES) {
+            restored = SetFileAttributesW(installedExecutable, oldAttributes);
+        }
+        if (snapshotsCaptured && startupTouched) {
+            if (!RestoreRegistryValue(RUN_KEY_PATH, &runSnapshot)) restored = FALSE;
+            if (!RestoreRegistryValue(STARTUP_APPROVED_KEY_PATH, &approvalSnapshot)) restored = FALSE;
+        }
+        if (stopped && wasRunning && restored && !StartInstalledWatcher(installedExecutable)) restored = FALSE;
+        if (!restored) {
+            WCHAR message[1024];
+            recoveryFailed = TRUE;
+            lstrcpyW(message, L"Installation failed and the previous state could not be fully restored.\n"
+                L"Run --status, then repair from a downloaded copy.\nRecovery executable: ");
+            AppendPathPart(message, 1024, backup[0] != L'\0' ? backup : installedExecutable);
+            ShowMessage(silent, MB_ICONERROR, message);
+            exitCode = 26;
+        } else {
+            ShowWin32Error(silent, operation, failure);
+        }
+    }
+    if (staged[0] != L'\0') DeleteTemporaryExecutable(staged);
+    if (!recoveryFailed && backup[0] != L'\0') DeleteTemporaryExecutable(backup);
+    FreeRegistrySnapshot(&runSnapshot);
+    FreeRegistrySnapshot(&approvalSnapshot);
+    SetLastError(failure);
+    return exitCode;
+}
+
+static int StopWatcherAction(BOOL silent)
+{
+    SignalWatcherToStop();
+    if (!WaitForWatcherToStop()) {
+        ShowWin32Error(silent, L"Stopping the watcher", ERROR_TIMEOUT);
+        return 31;
+    }
+    ShowMessage(silent, MB_ICONINFORMATION,
+        L"Tray Icon Promoter is stopped. Its startup setting is unchanged.\n"
+        L"Run --restart to start it again now.");
+    return 0;
+}
+
+static int RestartWatcherAction(BOOL silent)
+{
+    WCHAR directory[MAX_PATH];
+    WCHAR executable[MAX_PATH];
+    DWORD attributes;
+    if (!GetInstallPaths(directory, MAX_PATH, executable, MAX_PATH)) {
+        ShowMessage(silent, MB_ICONERROR, L"Could not determine the installation path.");
+        return 20;
+    }
+    attributes = GetFileAttributesW(executable);
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        ShowMessage(silent, MB_ICONERROR, L"The installed executable is missing. Run --install first.");
+        return 24;
+    }
+    SignalWatcherToStop();
+    if (!WaitForWatcherToStop()) {
+        ShowWin32Error(silent, L"Stopping the watcher", ERROR_TIMEOUT);
+        return 31;
+    }
+    if (!StartInstalledWatcher(executable)) {
+        ShowWin32Error(silent, L"Restarting the watcher", GetLastError());
+        return 24;
+    }
+    ShowMessage(silent, MB_ICONINFORMATION,
+        L"Tray Icon Promoter is running again. Its startup setting is unchanged.");
     return 0;
 }
 
@@ -955,6 +1264,12 @@ static int Uninstall(BOOL silent)
     WCHAR installDirectory[MAX_PATH];
     WCHAR installedExecutable[MAX_PATH];
     BOOL removedFile = FALSE;
+
+    if (!GetModulePath(currentExecutable, MAX_PATH) ||
+        !GetInstallPaths(installDirectory, MAX_PATH, installedExecutable, MAX_PATH)) {
+        ShowMessage(silent, MB_ICONERROR, L"Could not determine the installation path.");
+        return 20;
+    }
 
     SignalWatcherToStop();
     if (!WaitForWatcherToStop()) {
@@ -968,18 +1283,34 @@ static int Uninstall(BOOL silent)
         return 30;
     }
 
-    if (GetModulePath(currentExecutable, (DWORD)(sizeof(currentExecutable) / sizeof(currentExecutable[0]))) &&
-        GetInstallPaths(
-            installDirectory,
-            (DWORD)(sizeof(installDirectory) / sizeof(installDirectory[0])),
-            installedExecutable,
-            (DWORD)(sizeof(installedExecutable) / sizeof(installedExecutable[0])))) {
-        if (!StringEquals(currentExecutable, installedExecutable)) {
-            removedFile = DeleteFileW(installedExecutable) || GetLastError() == ERROR_FILE_NOT_FOUND;
-            if (removedFile) {
-                RemoveDirectoryW(installDirectory);
-            }
+    if (!StringEquals(currentExecutable, installedExecutable)) {
+        DWORD originalAttributes = GetFileAttributesW(installedExecutable);
+        DWORD attempt;
+        DWORD deleteError = ERROR_SUCCESS;
+        if (originalAttributes != INVALID_FILE_ATTRIBUTES &&
+            (originalAttributes & FILE_ATTRIBUTE_READONLY) != 0 &&
+            !SetFileAttributesW(installedExecutable, originalAttributes & ~FILE_ATTRIBUTE_READONLY)) {
+            ShowWin32Error(silent, L"Removing the executable", GetLastError());
+            return 32;
         }
+        for (attempt = 0; attempt < STOP_WAIT_ATTEMPTS; attempt++) {
+            if (DeleteFileW(installedExecutable)) {
+                removedFile = TRUE;
+                break;
+            }
+            deleteError = GetLastError();
+            if (deleteError == ERROR_FILE_NOT_FOUND || deleteError == ERROR_PATH_NOT_FOUND) {
+                removedFile = TRUE;
+                break;
+            }
+            Sleep(100);
+        }
+        if (!removedFile) {
+            if (originalAttributes != INVALID_FILE_ATTRIBUTES) SetFileAttributesW(installedExecutable, originalAttributes);
+            ShowWin32Error(silent, L"Removing the executable (watcher stopped; startup removed)", deleteError);
+            return 32;
+        }
+        RemoveDirectoryW(installDirectory);
     }
 
     if (removedFile) {
@@ -1040,80 +1371,167 @@ static BOOL SelfTestReadOnlyRepair(void)
     return DeleteFileW(temporaryFile) && passed;
 }
 
-static int ShowStatus(BOOL silent)
-{
+typedef struct AppStatus {
     PromotionStats stats;
-    BOOL running = IsWatcherRunning();
-    BOOL scanned = CollectStatus(&stats);
-    WCHAR installDirectory[MAX_PATH];
-    WCHAR installedExecutable[MAX_PATH];
-    StartupStatus startupStatus = STARTUP_UNKNOWN;
-    DWORD installedAttributes = INVALID_FILE_ATTRIBUTES;
-    BOOL pathsAvailable;
-    BOOL installedWritable = FALSE;
+    BOOL running;
+    BOOL ready;
+    BOOL scanned;
+    BOOL installed;
+    BOOL writable;
     BOOL healthy;
-    WCHAR message[1024];
+    StartupStatus startup;
+    WCHAR path[MAX_PATH];
+    WCHAR installedVersion[64];
+    const WCHAR *recommendation;
+} AppStatus;
 
-    if (!scanned) {
-        ZeroMemory(&stats, sizeof(stats));
+static BOOL ReadFileVersion(const WCHAR *path, WCHAR *version, DWORD capacity)
+{
+    DWORD ignored;
+    DWORD size = GetFileVersionInfoSizeW(path, &ignored);
+    BYTE *data;
+    VS_FIXEDFILEINFO *info = NULL;
+    UINT infoSize = 0;
+    BOOL result = FALSE;
+    if (size == 0 || size > 1024 * 1024) return FALSE;
+    data = (BYTE *)HeapAlloc(GetProcessHeap(), 0, size);
+    if (data == NULL) return FALSE;
+    if (GetFileVersionInfoW(path, 0, size, data) &&
+        VerQueryValueW(data, L"\\", (LPVOID *)&info, &infoSize) &&
+        infoSize >= sizeof(*info) && info->dwSignature == 0xFEEF04BD) {
+        version[0] = L'\0';
+        result = AppendUnsigned(version, capacity, HIWORD(info->dwFileVersionMS)) &&
+            AppendPathPart(version, capacity, L".") &&
+            AppendUnsigned(version, capacity, LOWORD(info->dwFileVersionMS)) &&
+            AppendPathPart(version, capacity, L".") &&
+            AppendUnsigned(version, capacity, HIWORD(info->dwFileVersionLS));
     }
+    HeapFree(GetProcessHeap(), 0, data);
+    return result;
+}
 
-    pathsAvailable = GetInstallPaths(
-        installDirectory,
-        (DWORD)(sizeof(installDirectory) / sizeof(installDirectory[0])),
-        installedExecutable,
-        (DWORD)(sizeof(installedExecutable) / sizeof(installedExecutable[0])));
-    if (pathsAvailable) {
-        startupStatus = GetStartupStatus(installedExecutable);
-        installedAttributes = GetFileAttributesW(installedExecutable);
-        installedWritable =
-            installedAttributes != INVALID_FILE_ATTRIBUTES &&
-            (installedAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
-            (installedAttributes & FILE_ATTRIBUTE_READONLY) == 0;
+static void GetAppStatus(AppStatus *status)
+{
+    WCHAR directory[MAX_PATH];
+    DWORD attributes;
+    ZeroMemory(status, sizeof(*status));
+    status->startup = STARTUP_UNKNOWN;
+    lstrcpyW(status->installedVersion, L"unknown");
+    status->running = IsWatcherRunning();
+    status->ready = status->running && IsWatcherReady();
+    status->scanned = CollectStatus(&status->stats);
+    if (GetInstallPaths(directory, MAX_PATH, status->path, MAX_PATH)) {
+        status->startup = GetStartupStatus(status->path);
+        attributes = GetFileAttributesW(status->path);
+        status->installed = attributes != INVALID_FILE_ATTRIBUTES &&
+            (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+        status->writable = status->installed && (attributes & FILE_ATTRIBUTE_READONLY) == 0;
+        if (status->installed) ReadFileVersion(status->path, status->installedVersion, 64);
     }
-
-    healthy =
-        running &&
-        scanned &&
-        stats.errors == 0 &&
-        stats.total == stats.promoted &&
-        startupStatus == STARTUP_CONFIGURED &&
-        installedWritable;
-
-    message[0] = L'\0';
-    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"Version: ");
-    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), APP_VERSION);
-    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nWatcher: ");
-    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), running ? L"running" : L"stopped");
-    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nStartup: ");
-    AppendPathPart(
-        message,
-        (DWORD)(sizeof(message) / sizeof(message[0])),
-        StartupStatusText(startupStatus));
-    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nInstalled file: ");
-    if (installedAttributes == INVALID_FILE_ATTRIBUTES ||
-        (installedAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-        AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"missing");
+    status->healthy = status->ready && status->scanned && status->stats.errors == 0 &&
+        status->stats.total == status->stats.promoted && status->startup == STARTUP_CONFIGURED &&
+        status->writable;
+    if (!status->installed || !status->writable) {
+        status->recommendation = L"Run --install from a downloaded copy to repair the installation.";
+    } else if (!status->running) {
+        status->recommendation = L"Run --restart to start the installed watcher.";
+    } else if (!status->ready || !status->scanned || status->stats.errors != 0) {
+        status->recommendation = L"Registry monitoring is not healthy; the watcher retries automatically. Use --restart if it persists.";
+    } else if (status->startup == STARTUP_DISABLED) {
+        status->recommendation = L"Enable Tray Icon Promoter in Windows Startup Apps.";
+    } else if (status->startup != STARTUP_CONFIGURED) {
+        status->recommendation = L"Run --install to repair the startup registration.";
+    } else if (status->stats.total != status->stats.promoted) {
+        status->recommendation = L"Run --once to refresh icons, or --restart to restart monitoring.";
     } else {
-        AppendPathPart(
-            message,
-            (DWORD)(sizeof(message) / sizeof(message[0])),
-            installedWritable ? L"present and writable" : L"read-only");
+        status->recommendation = L"No action needed.";
     }
-    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nInstalled path: ");
-    AppendPathPart(
-        message,
-        (DWORD)(sizeof(message) / sizeof(message[0])),
-        pathsAvailable ? installedExecutable : L"unknown");
-    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nTray records: ");
-    AppendUnsigned(message, (DWORD)(sizeof(message) / sizeof(message[0])), stats.total);
-    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nVisible records: ");
-    AppendUnsigned(message, (DWORD)(sizeof(message) / sizeof(message[0])), stats.promoted);
-    AppendPathPart(message, (DWORD)(sizeof(message) / sizeof(message[0])), L"\nErrors: ");
-    AppendUnsigned(message, (DWORD)(sizeof(message) / sizeof(message[0])), stats.errors);
+}
 
-    ShowMessage(silent, healthy ? MB_ICONINFORMATION : MB_ICONWARNING, message);
-    return healthy ? 0 : 1;
+static BOOL AppendJsonString(WCHAR *text, DWORD capacity, const WCHAR *value)
+{
+    static const WCHAR hex[] = L"0123456789abcdef";
+    if (!AppendPathPart(text, capacity, L"\"")) return FALSE;
+    while (*value != L'\0') {
+        WCHAR escaped[7];
+        WCHAR character = *value++;
+        if (character == L'"' || character == L'\\') {
+            escaped[0] = L'\\'; escaped[1] = character; escaped[2] = L'\0';
+        } else if (character < 32 || character > 126) {
+            escaped[0] = L'\\'; escaped[1] = L'u';
+            escaped[2] = hex[(character >> 12) & 15];
+            escaped[3] = hex[(character >> 8) & 15];
+            escaped[4] = hex[(character >> 4) & 15];
+            escaped[5] = hex[character & 15]; escaped[6] = L'\0';
+        } else {
+            escaped[0] = character; escaped[1] = L'\0';
+        }
+        if (!AppendPathPart(text, capacity, escaped)) return FALSE;
+    }
+    return AppendPathPart(text, capacity, L"\"");
+}
+
+static BOOL BuildStatusJson(const AppStatus *status, WCHAR *text, DWORD capacity)
+{
+    text[0] = L'\0';
+    return AppendPathPart(text, capacity, L"{\"version\":") &&
+        AppendJsonString(text, capacity, APP_VERSION) &&
+        AppendPathPart(text, capacity, L",\"installed_version\":") &&
+        AppendJsonString(text, capacity, status->installedVersion) &&
+        AppendPathPart(text, capacity, L",\"installed_path\":") &&
+        AppendJsonString(text, capacity, status->path) &&
+        AppendPathPart(text, capacity, status->running ? L",\"watcher_running\":true" : L",\"watcher_running\":false") &&
+        AppendPathPart(text, capacity, status->ready ? L",\"watcher_ready\":true" : L",\"watcher_ready\":false") &&
+        AppendPathPart(text, capacity, L",\"startup\":") &&
+        AppendJsonString(text, capacity, StartupStatusText(status->startup)) &&
+        AppendPathPart(text, capacity, status->writable ? L",\"installed_writable\":true" : L",\"installed_writable\":false") &&
+        AppendPathPart(text, capacity, status->scanned ? L",\"scan_complete\":true" : L",\"scan_complete\":false") &&
+        AppendPathPart(text, capacity, L",\"records\":") && AppendUnsigned(text, capacity, status->stats.total) &&
+        AppendPathPart(text, capacity, L",\"promoted\":") && AppendUnsigned(text, capacity, status->stats.promoted) &&
+        AppendPathPart(text, capacity, L",\"errors\":") && AppendUnsigned(text, capacity, status->stats.errors) &&
+        AppendPathPart(text, capacity, status->healthy ? L",\"healthy\":true" : L",\"healthy\":false") &&
+        AppendPathPart(text, capacity, L",\"recommendation\":") &&
+        AppendJsonString(text, capacity, status->recommendation) && AppendPathPart(text, capacity, L"}\r\n");
+}
+
+static int ShowStatus(BOOL silent, BOOL json)
+{
+    AppStatus status;
+    WCHAR message[4096];
+    GetAppStatus(&status);
+    if (json) {
+        CHAR output[4096];
+        DWORD size;
+        DWORD written = 0;
+        HANDLE stdoutHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (!BuildStatusJson(&status, message, 4096)) return 3;
+        size = (DWORD)lstrlenW(message);
+        for (written = 0; written < size; written++) output[written] = (CHAR)message[written];
+        if (stdoutHandle == NULL || stdoutHandle == INVALID_HANDLE_VALUE ||
+            !WriteFile(stdoutHandle, output, size, &written, NULL) || written != size) {
+            ShowMessage(silent, MB_ICONERROR, L"Could not write JSON. Redirect standard output to a file with Start-Process -RedirectStandardOutput.");
+            return 3;
+        }
+    } else {
+        message[0] = L'\0';
+        AppendPathPart(message, 4096, L"Diagnostic version: " APP_VERSION L"\nInstalled version: ");
+        AppendPathPart(message, 4096, status.installedVersion);
+        AppendPathPart(message, 4096, L"\nWatcher: ");
+        AppendPathPart(message, 4096, status.ready ? L"running and ready" : (status.running ? L"running, recovering" : L"stopped"));
+        AppendPathPart(message, 4096, L"\nStartup: ");
+        AppendPathPart(message, 4096, StartupStatusText(status.startup));
+        AppendPathPart(message, 4096, L"\nInstalled file: ");
+        AppendPathPart(message, 4096, !status.installed ? L"missing" : (status.writable ? L"present and writable" : L"read-only"));
+        AppendPathPart(message, 4096, L"\nInstalled path: ");
+        AppendPathPart(message, 4096, status.path);
+        AppendPathPart(message, 4096, L"\nTray records: "); AppendUnsigned(message, 4096, status.stats.total);
+        AppendPathPart(message, 4096, L"\nPromoted records: "); AppendUnsigned(message, 4096, status.stats.promoted);
+        AppendPathPart(message, 4096, L"\nScan: "); AppendPathPart(message, 4096, status.scanned ? L"complete" : L"incomplete");
+        AppendPathPart(message, 4096, L"\nErrors: "); AppendUnsigned(message, 4096, status.stats.errors);
+        AppendPathPart(message, 4096, L"\n\n"); AppendPathPart(message, 4096, status.recommendation);
+        ShowMessage(silent, status.healthy ? MB_ICONINFORMATION : MB_ICONWARNING, message);
+    }
+    return status.healthy ? 0 : 1;
 }
 
 static BOOL WaitForTestPromotion(HKEY root)
@@ -1314,6 +1732,9 @@ static RequestedAction ParseAction(const WCHAR *commandLine, BOOL *silent)
             else if (StringEquals(token, L"--status")) next = ACTION_STATUS;
             else if (StringEquals(token, L"--self-test")) next = ACTION_SELF_TEST;
             else if (StringEquals(token, L"--help")) next = ACTION_HELP;
+            else if (StringEquals(token, L"--stop")) next = ACTION_STOP;
+            else if (StringEquals(token, L"--restart")) next = ACTION_RESTART;
+            else if (StringEquals(token, L"--status-json")) next = ACTION_STATUS_JSON;
             if (next == ACTION_INVALID || action != ACTION_DEFAULT) invalid = TRUE;
             action = next;
         }
@@ -1332,6 +1753,9 @@ static void ShowHelp(BOOL silent, BOOL invalid)
         L"--watch       Run the watcher\n"
         L"--once        Promote current icons and exit\n"
         L"--status      Check installation health\n"
+        L"--status-json Write JSON diagnostics to standard output\n"
+        L"--stop        Stop until restart or next sign-in\n"
+        L"--restart     Restart without changing startup settings\n"
         L"--self-test   Test notifications and repair\n"
         L"--help        Show this help\n\n"
         L"Add --silent to suppress message boxes.\n"
@@ -1348,6 +1772,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previousInstance, LPWSTR comma
     WCHAR installedExecutable[MAX_PATH];
     PromotionStats stats;
     int result = 1;
+    HANDLE operation = NULL;
 
     (void)instance;
     (void)previousInstance;
@@ -1369,6 +1794,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previousInstance, LPWSTR comma
         }
     }
 
+    if (action == ACTION_INSTALL || action == ACTION_UNINSTALL ||
+        action == ACTION_STOP || action == ACTION_RESTART || action == ACTION_SELF_TEST) {
+        operation = AcquireOperationLock();
+        if (operation == NULL) {
+            ShowWin32Error(silent, L"Waiting for another install, uninstall, or restart", GetLastError());
+            return 26;
+        }
+    }
+
     switch (action) {
         case ACTION_WATCH:
             result = WatchForever();
@@ -1383,7 +1817,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previousInstance, LPWSTR comma
             result = PromoteOnce(TRUE, &stats) ? 0 : 1;
             break;
         case ACTION_STATUS:
-            result = ShowStatus(silent);
+            result = ShowStatus(silent, FALSE);
+            break;
+        case ACTION_STATUS_JSON:
+            result = ShowStatus(silent, TRUE);
+            break;
+        case ACTION_STOP:
+            result = StopWatcherAction(silent);
+            break;
+        case ACTION_RESTART:
+            result = RestartWatcherAction(silent);
             break;
         case ACTION_SELF_TEST:
             result = SelfTest(silent);
@@ -1398,5 +1841,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previousInstance, LPWSTR comma
             break;
     }
 
+    if (operation != NULL) ReleaseOperationLock(operation);
     return result;
 }

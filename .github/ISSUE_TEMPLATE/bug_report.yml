@@ -10,7 +10,7 @@ body:
     id: version
     attributes:
       label: Tray Icon Promoter version
-      placeholder: 1.0.0 x64
+      placeholder: 1.2.0 x64
     validations:
       required: true
   - type: input
@@ -41,5 +41,10 @@ body:
     id: status
     attributes:
       label: Status output
-      description: Run TrayIconPromoter.exe --status and copy the values shown.
+      description: |
+        Run TrayIconPromoter.exe --status and copy the values shown, or attach a JSON report created in PowerShell with:
+
+        Start-Process -FilePath "$env:LOCALAPPDATA\TrayIconPromoter\TrayIconPromoter.exe" -ArgumentList '--status-json' -RedirectStandardOutput .\status.json -Wait
+
+        Review installed_path before posting; it can contain your Windows username.
 

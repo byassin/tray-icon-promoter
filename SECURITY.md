@@ -6,8 +6,8 @@ Security fixes are applied to the latest release line.
 
 | Version | Supported |
 | --- | --- |
-| 1.1.x | Yes |
-| 1.0.x and earlier | No |
+| 1.2.x | Yes |
+| 1.1.x and earlier | No |
 
 ## Reporting a vulnerability
 
@@ -32,6 +32,8 @@ Tray Icon Promoter is designed to:
 - avoid process injection, Explorer hooks, drivers, services, and scheduled tasks;
 - make no network connections;
 - reject duplicate watcher instances.
+
+Install updates use same-directory staging and preserve a backup plus raw startup values for rollback. Lifecycle operations share an operation lock. JSON diagnostics are explicitly requested, write only to standard output, and can include the Windows username in the installed path; review before posting publicly.
 
 Dependabot monitors GitHub Actions dependencies, and secret scanning with push protection is enabled for the repository.
 
