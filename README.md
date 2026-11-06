@@ -21,7 +21,7 @@ Tray Icon Promoter watches the current user's notification-icon registry tree. W
 - Self-contained: one executable with no bundled runtime.
 - Immediate: refreshes Explorer's per-icon watcher after a visibility change.
 - Safe startup: a named mutex prevents duplicate watcher instances.
-- Verified repair: installation waits for the old watcher to stop and the replacement watcher to start.
+- Verified repair: installation waits for the old watcher to stop and the replacement watcher to arm notifications and complete its initial scan.
 - Actionable status: reports watcher, startup, installed-file, and tray-record health.
 - Offline and private: no telemetry, analytics, update checker, or network code.
 - Publicly buildable: C source, CMake project, CI, release workflow, and checksums are included.
@@ -76,9 +76,12 @@ Run these from Command Prompt or PowerShell. Add `--silent` to suppress message 
 | `TrayIconPromoter.exe --once` | Promotes all currently registered tray icons and exits. |
 | `TrayIconPromoter.exe --status` | Checks watcher, startup, installed-file, and tray-record health. |
 | `TrayIconPromoter.exe --self-test` | Verifies the live event-driven watcher and read-only executable repair using temporary test data. |
+| `TrayIconPromoter.exe --help` | Shows supported commands and usage. |
 | `TrayIconPromoter.exe --uninstall` | Stops the watcher and removes its startup entry. |
 
 `--status` returns exit code `0` only when the watcher is running, startup is correctly configured and enabled, the installed executable is present and writable, every tray record is promoted, and no registry scan errors occurred. With `--silent`, diagnostic message boxes are suppressed and the exit code remains available to automation.
+
+Choose one action per invocation. Unknown arguments, unmatched quotes, oversized arguments, and multiple actions return exit code `2` without installing, uninstalling, or launching a watcher.
 
 For a complete uninstall, run `--uninstall` from a downloaded copy outside `%LOCALAPPDATA%`. That copy can remove the installed executable after the watcher exits. If you run the installed executable itself, Windows keeps that file locked until the command exits; delete `%LOCALAPPDATA%\TrayIconPromoter` afterward.
 
@@ -118,7 +121,7 @@ The MinGW helper currently builds x64 only. The executable, checksum file, and o
 
 ## Test locally
 
-The self-test exercises the event-driven watcher with a temporary notification record and verifies read-only executable replacement. Because this is a Windows GUI executable, use `Start-Process` when a script needs to wait for and inspect its exit code:
+The self-test creates a temporary notification record after watcher startup, resets its promotion value later, and checks both notifications. It also verifies read-only executable replacement. Because this is a Windows GUI executable, use `Start-Process` when a script needs to wait for and inspect its exit code:
 
 ```powershell
 $test = Start-Process `
@@ -134,13 +137,15 @@ The full install lifecycle test modifies the current user's startup registration
 ```powershell
 .\scripts\test-install.ps1 `
   -Executable .\build\Release\TrayIconPromoter.exe `
-  -ExpectedVersion '1.1.0'
+  -ExpectedVersion '1.1.1'
 ```
+
+Run argument-parser and readiness success, timeout, and exited-child tests with `ctest --test-dir build -C Release --output-on-failure`. The install lifecycle test also checks help/invalid-argument side effects and deliberately fails watcher initialization before testing recovery.
 
 ## Release process
 
 1. Update the version in `CMakeLists.txt`, `src/tray_icon_promoter.c`, `resources/app.manifest`, `resources/version.rc`, and `CHANGELOG.md`, plus `-ExpectedVersion` in both GitHub Actions workflows.
-2. Merge through a pull request only after the required `Build x64` and `Build ARM64` checks pass. The x64 job also runs the self-test and install lifecycle test.
+2. Merge through a pull request only after the required `Build x64` and `Build ARM64` checks pass. The x64 job also runs the self-test, native argument/readiness tests, and install lifecycle test.
 3. Tag the merged commit as `vX.Y.Z` and push the tag.
 4. GitHub Actions builds x64 and ARM64 packages, creates `SHA256SUMS.txt`, attests the release artifacts, and publishes a GitHub Release.
 5. Download the public assets without repository credentials, verify both ZIP hashes and attestations, then install and health-check the published x64 build.
@@ -162,7 +167,7 @@ It does not modify Explorer binaries, hook other processes, load a DLL into Expl
 
 This tool always promotes every registered icon. It is intentionally not an icon-by-icon rules engine.
 
-GitHub's x64 Windows runner executes the self-test and install lifecycle test. CI cross-builds and packages ARM64, but does not execute the ARM64 binary on native ARM64 hardware.
+GitHub's x64 Windows runner executes the self-test, native argument/readiness tests, and install lifecycle test. CI cross-builds and packages ARM64, but does not execute the ARM64 binary on native ARM64 hardware.
 
 ## License
 

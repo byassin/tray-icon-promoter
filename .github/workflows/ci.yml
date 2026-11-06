@@ -40,13 +40,17 @@ jobs:
             throw "Self-test failed with exit code $($process.ExitCode)"
           }
 
+      - name: Run native argument and readiness tests
+        if: matrix.architecture == 'x64'
+        run: ctest --test-dir build -C Release --output-on-failure
+
       - name: Run install lifecycle test
         if: matrix.architecture == 'x64'
         shell: pwsh
         run: >-
           ./scripts/test-install.ps1
           -Executable ./build/Release/TrayIconPromoter.exe
-          -ExpectedVersion '1.1.0'
+          -ExpectedVersion '1.1.1'
 
       - name: Upload executable
         uses: actions/upload-artifact@v7.0.2

@@ -6,8 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-05
+
+### Fixed
+
+- Install waits for explicit watcher readiness after notifications are armed and the first scan succeeds, rejects an exited child, and cleans up its child on startup failure or timeout.
+- The self-test now verifies new records and later value changes after startup, rather than relying on the initial scan.
+- Unknown, conflicting, oversized, and malformed command-line arguments return exit code 2 without performing the default action.
+
+### Added
+
+- `--help` displays command usage.
+- Native readiness and parser regression tests, plus failed-startup and command-side-effect checks in the install lifecycle test.
+
 ### Changed
 
+- Updated artifact upload/download actions to v7.0.2/v8.0.2.
 - Clarified architecture-specific installation, package checksum and attestation verification, status health criteria, build and test prerequisites, supported security versions, ARM64 CI coverage, and the exact per-user state the application modifies.
 
 ## [1.1.0] - 2026-08-17
@@ -46,7 +60,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Install, uninstall, watch, one-shot, status, and self-test commands.
 - x64 and ARM64 CI/release builds with SHA-256 checksums.
 
-[Unreleased]: https://github.com/byassin/tray-icon-promoter/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/byassin/tray-icon-promoter/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/byassin/tray-icon-promoter/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/byassin/tray-icon-promoter/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/byassin/tray-icon-promoter/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/byassin/tray-icon-promoter/releases/tag/v1.0.0

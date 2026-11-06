@@ -1,7 +1,7 @@
 #include <windows.h>
 
 #define APP_NAME L"Tray Icon Promoter"
-#define APP_VERSION L"1.1.0"
+#define APP_VERSION L"1.1.1"
 #define REGISTRY_PATH L"Control Panel\\NotifyIconSettings"
 #define RUN_KEY_PATH L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 #define STARTUP_APPROVED_KEY_PATH L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run"
@@ -12,6 +12,7 @@
 #define EXECUTABLE_NAME L"TrayIconPromoter.exe"
 #define MUTEX_NAME L"Local\\TrayIconPromoter-8D37B978-83D7-4E36-A39C-F08BDB8B5911"
 #define STOP_EVENT_NAME L"Local\\TrayIconPromoter.Stop-8D37B978-83D7-4E36-A39C-F08BDB8B5911"
+#define READY_EVENT_NAME L"Local\\TrayIconPromoter.Ready-8D37B978-83D7-4E36-A39C-F08BDB8B5911"
 #define SELF_TEST_KEY_NAME L"_TrayIconPromoterSelfTest_8D37B978"
 #define DEBOUNCE_MILLISECONDS 150
 #define ROOT_RETRY_MILLISECONDS 2000
@@ -31,7 +32,9 @@ typedef enum RequestedAction {
     ACTION_UNINSTALL,
     ACTION_ONCE,
     ACTION_STATUS,
-    ACTION_SELF_TEST
+    ACTION_SELF_TEST,
+    ACTION_HELP,
+    ACTION_INVALID
 } RequestedAction;
 
 typedef enum StartupStatus {
@@ -424,6 +427,7 @@ static int WatchForever(void)
 {
     HANDLE mutex;
     HANDLE stopEvent;
+    HANDLE readyEvent;
     BOOL firstPass = TRUE;
 
     mutex = CreateMutexW(NULL, TRUE, MUTEX_NAME);
@@ -442,6 +446,15 @@ static int WatchForever(void)
         CloseHandle(mutex);
         return 11;
     }
+
+    readyEvent = CreateEventW(NULL, TRUE, FALSE, READY_EVENT_NAME);
+    if (readyEvent == NULL) {
+        CloseHandle(stopEvent);
+        ReleaseMutex(mutex);
+        CloseHandle(mutex);
+        return 12;
+    }
+    ResetEvent(readyEvent);
 
     SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
 
@@ -485,7 +498,9 @@ static int WatchForever(void)
             continue;
         }
 
-        PromoteAll(root, firstPass, &ignored);
+        if (PromoteAll(root, firstPass, &ignored)) {
+            SetEvent(readyEvent);
+        }
         firstPass = FALSE;
 
         waitHandles[0] = stopEvent;
@@ -511,6 +526,8 @@ static int WatchForever(void)
         }
     }
 
+    ResetEvent(readyEvent);
+    CloseHandle(readyEvent);
     CloseHandle(stopEvent);
     ReleaseMutex(mutex);
     CloseHandle(mutex);
@@ -732,14 +749,15 @@ static BOOL RemoveStartupCommand(void)
     return RemoveStartupApprovalOverride();
 }
 
-static BOOL WaitForWatcherToStart(HANDLE process)
+static BOOL WaitForWatcherToStart(HANDLE process, HANDLE readyEvent)
 {
     DWORD attempt;
 
     for (attempt = 0; attempt < STOP_WAIT_ATTEMPTS; attempt++) {
         DWORD waitResult;
 
-        if (IsWatcherRunning()) {
+        if (WaitForSingleObject(readyEvent, 0) == WAIT_OBJECT_0 &&
+            WaitForSingleObject(process, 0) == WAIT_TIMEOUT) {
             return TRUE;
         }
 
@@ -753,7 +771,8 @@ static BOOL WaitForWatcherToStart(HANDLE process)
         }
     }
 
-    if (IsWatcherRunning()) {
+    if (WaitForSingleObject(readyEvent, 0) == WAIT_OBJECT_0 &&
+        WaitForSingleObject(process, 0) == WAIT_TIMEOUT) {
         return TRUE;
     }
 
@@ -766,6 +785,7 @@ static BOOL StartInstalledWatcher(const WCHAR *installedExecutable)
     STARTUPINFOW startupInfo;
     PROCESS_INFORMATION processInfo;
     WCHAR commandLine[MAX_PATH + 32];
+    HANDLE readyEvent;
     BOOL result;
 
     if (!BuildWatcherCommand(
@@ -778,6 +798,12 @@ static BOOL StartInstalledWatcher(const WCHAR *installedExecutable)
     ZeroMemory(&startupInfo, sizeof(startupInfo));
     startupInfo.cb = sizeof(startupInfo);
     ZeroMemory(&processInfo, sizeof(processInfo));
+
+    readyEvent = CreateEventW(NULL, TRUE, FALSE, READY_EVENT_NAME);
+    if (readyEvent == NULL) {
+        return FALSE;
+    }
+    ResetEvent(readyEvent);
 
     result = CreateProcessW(
         installedExecutable,
@@ -795,9 +821,22 @@ static BOOL StartInstalledWatcher(const WCHAR *installedExecutable)
         DWORD startError;
 
         CloseHandle(processInfo.hThread);
-        result = WaitForWatcherToStart(processInfo.hProcess);
+        result = WaitForWatcherToStart(processInfo.hProcess, readyEvent);
         startError = GetLastError();
+        if (!result) {
+            /* Only terminate the exact child we created, never another watcher. */
+            TerminateProcess(processInfo.hProcess, 24);
+            WaitForSingleObject(processInfo.hProcess, 5000);
+        }
         CloseHandle(processInfo.hProcess);
+        if (!result) {
+            SetLastError(startError);
+        }
+    }
+
+    {
+        DWORD startError = GetLastError();
+        CloseHandle(readyEvent);
         if (!result) {
             SetLastError(startError);
         }
@@ -1077,13 +1116,35 @@ static int ShowStatus(BOOL silent)
     return healthy ? 0 : 1;
 }
 
+static BOOL WaitForTestPromotion(HKEY root)
+{
+    DWORD attempt;
+    for (attempt = 0; attempt < STOP_WAIT_ATTEMPTS; attempt++) {
+        HKEY testKey = NULL;
+        DWORD value = 0;
+        DWORD type = 0;
+        DWORD size = sizeof(value);
+        BOOL promoted = FALSE;
+        if (RegOpenKeyExW(root, SELF_TEST_KEY_NAME, 0, KEY_QUERY_VALUE, &testKey) == ERROR_SUCCESS) {
+            promoted = RegQueryValueExW(testKey, PROMOTED_VALUE_NAME, NULL, &type,
+                (BYTE *)&value, &size) == ERROR_SUCCESS &&
+                type == REG_DWORD && size == sizeof(value) && value == 1;
+            RegCloseKey(testKey);
+        }
+        if (promoted) {
+            return TRUE;
+        }
+        Sleep(100);
+    }
+    return FALSE;
+}
+
 static int SelfTest(BOOL silent)
 {
     HKEY root = NULL;
     HKEY testKey = NULL;
     WCHAR source[MAX_PATH];
     DWORD disposition;
-    DWORD attempt;
     DWORD value = 0;
     BOOL watcherWasRunning = IsWatcherRunning();
     BOOL startedWatcher = FALSE;
@@ -1103,6 +1164,18 @@ static int SelfTest(BOOL silent)
         return 40;
     }
 
+    if (!watcherWasRunning) {
+        if (!GetModulePath(source, (DWORD)(sizeof(source) / sizeof(source[0]))) ||
+            !StartInstalledWatcher(source)) {
+            RegCloseKey(root);
+            ShowMessage(silent, MB_ICONERROR, L"Self-test could not start the watcher.");
+            return 41;
+        }
+        startedWatcher = TRUE;
+    }
+
+    /* Allow notifications from the initial scan to drain before changing data. */
+    Sleep(DEBOUNCE_MILLISECONDS * 4);
     RegDeleteTreeW(root, SELF_TEST_KEY_NAME);
 
     if (RegCreateKeyExW(
@@ -1125,42 +1198,18 @@ static int SelfTest(BOOL silent)
             RegCloseKey(testKey);
             testKey = NULL;
 
-            if (watcherWasRunning ||
-                (GetModulePath(source, (DWORD)(sizeof(source) / sizeof(source[0]))) &&
-                 StartInstalledWatcher(source))) {
-                startedWatcher = !watcherWasRunning;
-
-                for (attempt = 0; attempt < STOP_WAIT_ATTEMPTS; attempt++) {
-                    DWORD resultValue = 0;
-                    DWORD valueType = 0;
-                    DWORD valueSize = sizeof(resultValue);
-
-                    if (RegOpenKeyExW(
-                            root,
-                            SELF_TEST_KEY_NAME,
-                            0,
-                            KEY_QUERY_VALUE,
-                            &testKey) == ERROR_SUCCESS) {
-                        if (RegQueryValueExW(
-                                testKey,
-                                PROMOTED_VALUE_NAME,
-                                NULL,
-                                &valueType,
-                                (BYTE *)&resultValue,
-                                &valueSize) == ERROR_SUCCESS &&
-                            valueType == REG_DWORD &&
-                            valueSize == sizeof(resultValue) &&
-                            resultValue == 1) {
-                            passed = TRUE;
-                        }
-                        RegCloseKey(testKey);
-                        testKey = NULL;
-                    }
-
-                    if (passed) {
-                        break;
-                    }
-                    Sleep(100);
+            passed = WaitForTestPromotion(root);
+            if (passed) {
+                /* Verify a later value change as well as a new registration. */
+                Sleep(DEBOUNCE_MILLISECONDS * 4);
+                if (RegOpenKeyExW(root, SELF_TEST_KEY_NAME, 0, KEY_SET_VALUE, &testKey) == ERROR_SUCCESS) {
+                    passed = RegSetValueExW(testKey, PROMOTED_VALUE_NAME, 0, REG_DWORD,
+                        (const BYTE *)&value, sizeof(value)) == ERROR_SUCCESS;
+                    RegCloseKey(testKey);
+                    testKey = NULL;
+                    passed = passed && WaitForTestPromotion(root);
+                } else {
+                    passed = FALSE;
                 }
             }
         }
@@ -1196,7 +1245,8 @@ static BOOL IsCommandLineSpace(WCHAR character)
 static const WCHAR *ReadCommandLineToken(
     const WCHAR *cursor,
     WCHAR *token,
-    DWORD tokenCapacity)
+    DWORD tokenCapacity,
+    BOOL *valid)
 {
     DWORD length = 0;
     BOOL inQuotes = FALSE;
@@ -1223,11 +1273,16 @@ static const WCHAR *ReadCommandLineToken(
 
         if (length + 1 < tokenCapacity) {
             token[length++] = *cursor;
+        } else {
+            *valid = FALSE;
         }
         cursor++;
     }
 
     token[length] = L'\0';
+    if (inQuotes) {
+        *valid = FALSE;
+    }
     return cursor;
 }
 
@@ -1236,34 +1291,52 @@ static RequestedAction ParseAction(const WCHAR *commandLine, BOOL *silent)
     const WCHAR *cursor = commandLine;
     WCHAR token[MAX_PATH];
     RequestedAction action = ACTION_DEFAULT;
+    BOOL invalid = FALSE;
+    BOOL valid = TRUE;
 
     *silent = FALSE;
 
-    cursor = ReadCommandLineToken(cursor, token, (DWORD)(sizeof(token) / sizeof(token[0])));
+    cursor = ReadCommandLineToken(cursor, token, (DWORD)(sizeof(token) / sizeof(token[0])), &valid);
     while (cursor != NULL) {
-        cursor = ReadCommandLineToken(cursor, token, (DWORD)(sizeof(token) / sizeof(token[0])));
+        cursor = ReadCommandLineToken(cursor, token, (DWORD)(sizeof(token) / sizeof(token[0])), &valid);
         if (cursor == NULL && token[0] == L'\0') {
             break;
         }
 
         if (StringEquals(token, L"--silent")) {
             *silent = TRUE;
-        } else if (StringEquals(token, L"--watch")) {
-            action = ACTION_WATCH;
-        } else if (StringEquals(token, L"--install")) {
-            action = ACTION_INSTALL;
-        } else if (StringEquals(token, L"--uninstall")) {
-            action = ACTION_UNINSTALL;
-        } else if (StringEquals(token, L"--once")) {
-            action = ACTION_ONCE;
-        } else if (StringEquals(token, L"--status")) {
-            action = ACTION_STATUS;
-        } else if (StringEquals(token, L"--self-test")) {
-            action = ACTION_SELF_TEST;
+        } else {
+            RequestedAction next = ACTION_INVALID;
+            if (StringEquals(token, L"--watch")) next = ACTION_WATCH;
+            else if (StringEquals(token, L"--install")) next = ACTION_INSTALL;
+            else if (StringEquals(token, L"--uninstall")) next = ACTION_UNINSTALL;
+            else if (StringEquals(token, L"--once")) next = ACTION_ONCE;
+            else if (StringEquals(token, L"--status")) next = ACTION_STATUS;
+            else if (StringEquals(token, L"--self-test")) next = ACTION_SELF_TEST;
+            else if (StringEquals(token, L"--help")) next = ACTION_HELP;
+            if (next == ACTION_INVALID || action != ACTION_DEFAULT) invalid = TRUE;
+            action = next;
         }
     }
 
-    return action;
+    return invalid || !valid ? ACTION_INVALID : action;
+}
+
+static void ShowHelp(BOOL silent, BOOL invalid)
+{
+    ShowMessage(silent, invalid ? MB_ICONERROR : MB_ICONINFORMATION,
+        L"Tray Icon Promoter " APP_VERSION L"\n\n"
+        L"Choose one action:\n"
+        L"--install     Install or repair\n"
+        L"--uninstall   Stop and uninstall\n"
+        L"--watch       Run the watcher\n"
+        L"--once        Promote current icons and exit\n"
+        L"--status      Check installation health\n"
+        L"--self-test   Test notifications and repair\n"
+        L"--help        Show this help\n\n"
+        L"Add --silent to suppress message boxes.\n"
+        L"No action: install from a downloaded copy, watch from the installed copy.\n"
+        L"Unknown arguments or multiple actions return exit code 2.");
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previousInstance, LPWSTR commandLine, int showCommand)
@@ -1315,7 +1388,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previousInstance, LPWSTR comma
         case ACTION_SELF_TEST:
             result = SelfTest(silent);
             break;
+        case ACTION_HELP:
+            ShowHelp(silent, FALSE);
+            result = 0;
+            break;
         default:
+            ShowHelp(silent, TRUE);
             result = 2;
             break;
     }
