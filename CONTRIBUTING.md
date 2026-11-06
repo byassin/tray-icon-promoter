@@ -6,12 +6,14 @@ Contributions are welcome. Keep changes small, reviewable, and focused on the pr
 
 1. Create a branch from `main`.
 2. Build with CMake 3.20 or newer and a current Visual Studio C++ toolchain, or use `scripts/build.ps1` with MinGW-w64 for x64.
-3. Run the self-test and check the GUI process exit code with `Start-Process -Wait -PassThru`.
+3. Use PowerShell 7 for developer tests. Run the self-test and check the GUI process exit code with the bounded `WaitForExit(15000)` example in the README.
    Run `ctest --test-dir build -C Release --output-on-failure` for argument/diagnostic, watcher recovery, and installer transaction regressions.
 4. Run `./scripts/test-install.ps1 -Executable <app-path> -ExpectedVersion <version> -FailureExecutable <installer-test-path>` only from an isolated Windows account or CI runner with no existing Tray Icon Promoter installation.
 5. Test install, status, live promotion, logon startup, and uninstall on Windows 11.
 6. Run `git diff --check` and review the complete diff.
 7. Update documentation and `CHANGELOG.md` for user-visible changes. Run `./scripts/test-version.ps1` to verify the version metadata; workflows derive their expected version from it.
+
+When visible dialogs change, replace the versioned Status and Help screenshots with real captures from the public release executable. Record capture date, version, and executable SHA-256 in `docs/screenshots/README.md`; review the screenshot for private data before publishing. Do not replace existing release ZIPs or their attested checksum manifest for documentation-only changes. Publish a separate documentation archive and link the current docs from the release notes.
 
 ## Pull requests
 
